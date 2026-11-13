@@ -1,0 +1,12 @@
+[package]
+name = "rewind-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Platform-independent logic for Rewind: config, hotkeys, clip library, trimming"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+directories = "5"
+serde_json = "1"

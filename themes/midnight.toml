@@ -1,0 +1,15 @@
+name = "Midnight"
+author = "Rewind"
+
+[colors]
+nav = "#090b14"
+panel = "#0e1220"
+card = "#151a2c"
+card_hi = "#1e2540"
+stroke = "#262e4d"
+text = "#e6e9fb"
+muted = "#8c94c0"
+faint = "#5b6390"
+accent = "#7c8cff"
+danger = "#ff6b81"
+warn = "#f2b84b"

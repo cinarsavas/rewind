@@ -1,0 +1,15 @@
+name = "Ember"
+author = "Rewind"
+
+[colors]
+nav = "#0e0b0a"
+panel = "#15110f"
+card = "#1e1816"
+card_hi = "#2a211e"
+stroke = "#35292a"
+text = "#f1e9e4"
+muted = "#a39088"
+faint = "#6e5d57"
+accent = "#ff7a45"
+danger = "#ff5d6c"
+warn = "#f2b84b"

@@ -1,0 +1,15 @@
+name = "Sakura"
+author = "Rewind"
+
+[colors]
+nav = "#120d12"
+panel = "#191219"
+card = "#231a23"
+card_hi = "#30232f"
+stroke = "#3d2d3b"
+text = "#f6e9f1"
+muted = "#b296a7"
+faint = "#78606f"
+accent = "#ff8fb8"
+danger = "#ff6b81"
+warn = "#f2b84b"

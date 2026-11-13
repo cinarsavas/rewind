@@ -1,0 +1,55 @@
+# Rewind theme template
+#
+# 1. Copy this file into the Rewind themes folder
+#    (Add-ons -> Open themes folder, or the "Create example theme" button).
+# 2. Give it a file name made of lower-case letters, digits and dashes,
+#    for example "sunset.toml". The file name is the theme id.
+# 3. Change the colours below and press Apply in Settings/Add-ons.
+#
+# Colours are "#rrggbb" or "#rgb". Hover states, tinted backgrounds and the
+# text colour used on top of the accent are derived automatically.
+#
+# A theme is rejected if the text is hard to read:
+#   - text on card       needs 4.5:1 contrast
+#   - muted on card      needs 3:1
+#   - muted on deep      needs 3:1 (chips, slider tracks)
+#   - accent on card     needs 2.5:1
+# Start from a known-good theme and change one colour at a time.
+
+name = "Example theme"
+author = "you"
+
+[colors]
+# Side bar and other navigation surfaces.
+nav = "#0a0c11"
+
+# Main page background behind the cards.
+panel = "#10131a"
+
+# Cards, clip rows, dialogs.
+card = "#171b24"
+
+# Raised buttons, hovered rows, input backgrounds.
+card_hi = "#1f2431"
+
+# Thin borders around cards and controls.
+stroke = "#252b3a"
+
+# Primary text. This is the most important contrast pair (text on card).
+text = "#e8ebf2"
+
+# Secondary text: hints, timestamps, descriptions.
+muted = "#8b94a7"
+
+# Tertiary text: disabled labels and quiet captions.
+faint = "#5c6578"
+
+# Highlights, primary buttons, the replay ring, active navigation.
+# A light accent gets dark text automatically; a dark accent gets light text.
+accent = "#4ad6a7"
+
+# Errors and destructive actions (delete, failed downloads).
+danger = "#ff5d6c"
+
+# Warnings and things that need attention.
+warn = "#f2b84b"

@@ -1,0 +1,15 @@
+name = "High contrast"
+author = "Rewind"
+
+[colors]
+nav = "#000000"
+panel = "#050505"
+card = "#0d0d0d"
+card_hi = "#1a1a1a"
+stroke = "#5a5a5a"
+text = "#ffffff"
+muted = "#c8c8c8"
+faint = "#8c8c8c"
+accent = "#ffe14a"
+danger = "#ff6b6b"
+warn = "#ffb347"

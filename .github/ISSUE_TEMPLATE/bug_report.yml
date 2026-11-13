@@ -1,0 +1,40 @@
+name: Bug report
+description: Something doesn't work or looks wrong
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you expect, and what did you see instead?
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Rewind version
+      placeholder: "0.2.0 (installer or portable?)"
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: Windows version, CPU and GPU
+      placeholder: "Windows 11 23H2, i5-8250U, Intel UHD 620"
+    validations:
+      required: true
+  - type: textarea
+    id: perf
+    attributes:
+      label: Performance numbers (if relevant)
+      description: What does the THIS APP card on the Replay page show (CPU %, memory, GPU/CPU encoder)? Which preset or settings are you using?
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options: [Recording / capture, Audio, Hotkeys, Tray, Overlay notification, Clips / thumbnails, Voice clipping, Themes, Installer, Antivirus false positive, Other]
+  - type: textarea
+    id: more
+    attributes:
+      label: Anything else
+      description: Screenshots, steps to reproduce, the game you were playing (and whether it is borderless or exclusive fullscreen).

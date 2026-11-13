@@ -1,0 +1,15 @@
+name = "Paper (light)"
+author = "Rewind"
+
+[colors]
+nav = "#e8eaf0"
+panel = "#f4f5f9"
+card = "#ffffff"
+card_hi = "#edeff5"
+stroke = "#d3d8e3"
+text = "#1b1f2a"
+muted = "#566074"
+faint = "#8a92a5"
+accent = "#0e9a73"
+danger = "#d63a4a"
+warn = "#a96d00"
