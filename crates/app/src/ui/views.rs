@@ -869,7 +869,7 @@ fn about_page(ui: &mut egui::Ui) {
     card(ui, |ui| {
         ui.horizontal(|ui| {
             ui.label(bold(format!("Version {}", env!("CARGO_PKG_VERSION"))));
-            ui.label(muted("· made by opencode"));
+            ui.label(muted("· made by pro82xw"));
         });
         ui.add_space(4.0);
         ui.label(muted("Capture, encoding and the replay buffer are provided by libobs from OBS Studio (GPL-3.0-or-later), driven through the libobs-rs bindings. Rewind is licensed GPL-3.0-or-later and isn't affiliated with NVIDIA or the OBS Project."));

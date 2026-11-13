@@ -25,7 +25,7 @@ Get-ChildItem -Recurse -Include *.md,*.yml | ForEach-Object {
 git commit -am "Set repository owner"; git push
 ```
 
-You do **not** need to edit any code: release builds read the repository name from `GITHUB_REPOSITORY`, so the app's Add-ons page automatically downloads from *your* releases.
+You do **not** need to edit any code: release builds read the repository name from `GITHUB_REPOSITORY`, so the app's Add-ons page automatically downloads from *your* releases. A local `cargo run` falls back to the upstream release feed; set `REWIND_REPO=YOUR-USERNAME/rewind` to point a local build at your own releases.
 
 ## 3. Turn on the checks
 
@@ -37,8 +37,8 @@ In the repo's **Settings, Actions, General**, allow workflows to have **read and
 2. Tag and push:
 
 ```powershell
-git tag v0.2.0
-git push origin v0.2.0
+git tag v0.2.1
+git push origin v0.2.1
 ```
 
 The **Release** workflow then builds `Rewind.exe`, bundles the OBS runtime, produces the installer and portable zip, builds the add-on packs, computes checksums, attests provenance and publishes the GitHub release. Expect about 15 to 25 minutes.
@@ -53,7 +53,7 @@ New-Item -ItemType Directory -Force dist\stage | Out-Null
 Copy-Item target\release\rewind.exe dist\stage\Rewind.exe
 Start-Process dist\stage\Rewind.exe -ArgumentList "--install-runtime" -Wait   # downloads the OBS runtime
 Copy-Item LICENSE, README.md, THIRD_PARTY_NOTICES.md dist\stage\
-& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DMyAppVersion=0.2.0 installer\rewind.iss
+& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DMyAppVersion=0.2.1 installer\rewind.iss
 ```
 
 ## 6. Reduce antivirus warnings

@@ -2,6 +2,15 @@
 
 All notable changes are listed here. The section for a tag becomes that release's notes.
 
+## [0.2.1]
+
+### Fixed
+- **Add-ons now work in local builds too.** The Add-ons page no longer says the build "isn't linked to a GitHub repository"; it falls back to the upstream release feed, and `REWIND_REPO` can still point a build at a fork.
+- Voice clipping can be installed and started from any build, so "clip that" works after the speech engine and a language pack are downloaded.
+
+### Changed
+- The About page credits **pro82xw** instead of opencode.
+
 ## [0.2.0]
 
 ### Added

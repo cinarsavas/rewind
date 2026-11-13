@@ -13,11 +13,17 @@ use rewind_core::theme::{Palette, ThemeFile};
 
 use crate::download::{download_verified, fetch_text, unzip, Progress};
 
-/// Set by CI (`REWIND_REPO=owner/name`) so release builds fetch add-ons from their own repo.
-pub const REPO: &str = match option_env!("REWIND_REPO") {
-    Some(r) => r,
-    None => "OWNER/rewind",
-};
+/// Where add-ons come from. CI sets `REWIND_REPO=owner/name` so a release build points at its
+/// own repository; the same variable in the environment overrides it at run time, and a plain
+/// local build falls back to the upstream project so add-ons still work without CI.
+pub fn repo() -> String {
+    let usable = |r: String| (!r.is_empty() && r != "OWNER/rewind").then_some(r);
+    std::env::var("REWIND_REPO")
+        .ok()
+        .and_then(usable)
+        .or_else(|| option_env!("REWIND_REPO").map(str::to_owned).and_then(usable))
+        .unwrap_or_else(|| "cinarsavas/rewind".to_string())
+}
 
 pub const KEY_RUNTIME: &str = "voice-runtime";
 
@@ -91,14 +97,11 @@ impl PackManager {
         if self.index_state == IndexState::Loading {
             return;
         }
-        if REPO == "OWNER/rewind" {
-            self.index_state = IndexState::Failed("This build isn't linked to a GitHub repository, so there's nothing to download from. Release builds from GitHub are.".into());
-            return;
-        }
         self.index_state = IndexState::Loading;
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+        let repo = repo();
         std::thread::spawn(move || {
-            let result = fetch_text(&index_url(REPO)).and_then(|t| PackIndex::from_toml(&t));
+            let result = fetch_text(&index_url(&repo)).and_then(|t| PackIndex::from_toml(&t));
             let _ = tx.send(Msg::Index(result));
             ctx.request_repaint();
         });

@@ -30,8 +30,9 @@ fn main() {
     println!("cargo:rerun-if-env-changed=GITHUB_REPOSITORY");
     println!("cargo:rerun-if-changed=assets/rewind.ico");
 
-    // Release builds on GitHub fetch add-ons from their own repository.
-    let repo = env::var("REWIND_REPO").or_else(|_| env::var("GITHUB_REPOSITORY")).unwrap_or_else(|_| "OWNER/rewind".into());
+    // Release builds on GitHub fetch add-ons from their own repository. A local build falls
+    // back to the upstream project so the Add-ons page works without CI.
+    let repo = env::var("REWIND_REPO").or_else(|_| env::var("GITHUB_REPOSITORY")).unwrap_or_else(|_| "cinarsavas/rewind".into());
     println!("cargo:rustc-env=REWIND_REPO={repo}");
 
     if env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
