@@ -1,6 +1,6 @@
 # Themes
 
-Rewind ships with one built-in theme (**Mint**). Everything else is optional: download themes from **Add-ons**, or write your own. A theme is a small TOML file with eleven colours. There are no images, fonts or layout settings to worry about.
+Rewind ships with one built-in theme (**Mint**). Everything else is optional: download themes from **Add-ons**, or write your own. A theme is a small TOML file with eleven colours plus optional layout and background settings. Drop in a background image if you want one.
 
 ## Quick start
 
@@ -87,6 +87,33 @@ You don't set these; they are calculated from the eleven base colours so every t
 
 Because these are derived, a good `card`/`text`/`accent` trio does most of the work.
 
+## Layout and background
+
+An optional `[layout]` section changes the shape of the app, not just its colours. Every field is optional; leave it out and Rewind keeps its normal layout.
+
+```toml
+[layout]
+nav_width       = 236     # left navigation width, 160..360
+content_width   = 880     # max width of the centred page, 520..1600
+page_margin     = 28      # page margin, 8..80
+card_radius     = 16      # card and dialog corners, 0..32
+background      = ""      # image file relative to the theme, e.g. "sunset.jpg"
+background_color = ""     # solid page background; empty = panel colour
+background_top   = ""     # gradient start; set both for a gradient
+background_bottom = ""    # gradient end
+background_dim   = 0.35   # image dimming for readable text, 0.0..0.9
+```
+
+The three background modes are checked in this order:
+
+1. **Image** — `background` points at a PNG, JPEG, BMP, GIF or WebP file next to the theme. It is scaled to cover the window without stretching. `background_dim` adds a dark overlay so text stays readable.
+2. **Gradient** — set both `background_top` and `background_bottom` for a vertical gradient.
+3. **Solid** — set `background_color` for a flat page background.
+
+With any background active, the navigation bar and content panel become slightly translucent so the image shows through. Cards stay opaque, so their text is unaffected. In-game notifications use the same palette, so they match the theme too.
+
+Layout values are clamped to the ranges above, so a typo cannot make the app unusable.
+
 ## Readability is enforced
 
 A theme is rejected if it would be hard to read:
@@ -124,7 +151,7 @@ Rewind automatically keeps inset areas (`deep`) light on a light theme, so chips
 - `accent` is the personality colour. Try it first; `card`, `panel` and `nav` can usually stay near the defaults.
 - Keep `text` clearly lighter than `card` on dark themes (or darker on light themes). That single pair decides whether the theme is accepted.
 - `danger` and `warn` are only used for errors and warnings. They don't need to match the accent.
-- Themes only change colours. Animations, smooth scrolling, fonts and layout are separate settings.
+- Themes change colours, layout and background. Animations, smooth scrolling and fonts are separate settings.
 
 ## Share a theme
 

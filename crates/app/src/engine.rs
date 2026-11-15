@@ -7,24 +7,30 @@
 //! The replay buffer output encodes that scene into a rolling in-RAM buffer.
 
 use std::any::Any;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::{Duration, Instant, SystemTime};
 
 use libobs_simple::output::replay::ObsContextReplayExt;
 use libobs_simple::output::simple::{HardwareCodec, HardwarePreset, X264Preset};
 use libobs_simple::sources::windows::{
-    GameCaptureSourceBuilder, MonitorCaptureSourceBuilder, ObsDisplayCaptureMethod, ObsGameCaptureMode,
+    GameCaptureSourceBuilder, MonitorCaptureSourceBuilder, ObsDisplayCaptureMethod,
+    ObsGameCaptureMode,
 };
 use libobs_wrapper::context::ObsContext;
 use libobs_wrapper::data::audio::LinearVolume;
-use libobs_wrapper::enums::ObsScaleType;
 use libobs_wrapper::data::output::{ObsOutputTrait, ObsReplayBufferOutputRef};
 use libobs_wrapper::data::video::ObsVideoInfoBuilder;
 use libobs_wrapper::data::ObsDataSetters;
+use libobs_wrapper::enums::ObsScaleType;
 use libobs_wrapper::scenes::ObsSceneRef;
 use libobs_wrapper::sources::{ObsSourceAudioExt, ObsSourceBuilder, ObsSourceRef};
-use libobs_wrapper::utils::{ObsPath, StartupInfo};
+use libobs_wrapper::utils::{ObsError, ObsPath, StartupInfo};
 
-use rewind_core::config::{output_size, AudioConfig, CaptureMode, Codec, Config, DisplayMethod, Quality};
+use rewind_core::config::{
+    output_size, AudioConfig, CaptureMode, Codec, Config, DisplayMethod, Quality,
+};
 
 pub type EngineResult<T> = Result<T, String>;
 
@@ -47,7 +53,11 @@ pub fn list_monitors() -> Vec<MonitorInfo> {
                 .map(|(i, m)| MonitorInfo {
                     label: format!(
                         "{}{} ({}×{})",
-                        if m.friendly_name.is_empty() { format!("Display {}", i + 1) } else { m.friendly_name.clone() },
+                        if m.friendly_name.is_empty() {
+                            format!("Display {}", i + 1)
+                        } else {
+                            m.friendly_name.clone()
+                        },
                         if m.is_primary { " — primary" } else { "" },
                         m.width,
                         m.height
@@ -68,6 +78,10 @@ pub struct Engine {
     audio_sources: Vec<(AudioKind, ObsSourceRef)>,
     _scene_items: Vec<Box<dyn Any>>,
     generation: u32,
+    /// Where OBS writes clips, and the file extension it uses. Kept here so a save can
+    /// recognise the finished file even when OBS's completion signal is missed.
+    output_dir: PathBuf,
+    extension: String,
     /// Human-readable description of what was actually set up (encoder fallbacks etc.).
     pub notes: Vec<String>,
     /// True when video is being encoded on the CPU (x264), far heavier than GPU encoding.
@@ -118,7 +132,11 @@ fn video_info(cfg: &Config) -> libobs_wrapper::data::video::ObsVideoInfo {
         .base_height(bh)
         .output_width(ow)
         .output_height(oh)
-        .scale_type(if cfg.low_power_ui { ObsScaleType::Bilinear } else { ObsScaleType::Bicubic })
+        .scale_type(if cfg.low_power_ui {
+            ObsScaleType::Bilinear
+        } else {
+            ObsScaleType::Bicubic
+        })
         .build()
 }
 
@@ -149,6 +167,8 @@ impl Engine {
             audio_sources: Vec::new(),
             _scene_items: Vec::new(),
             generation: 0,
+            output_dir: cfg.output_dir.clone(),
+            extension: cfg.container.extension().to_string(),
             notes: Vec::new(),
             cpu_encoding: false,
             encoder_label: String::new(),
@@ -171,7 +191,9 @@ impl Engine {
         self.scene = None;
 
         let video = video_info(cfg);
-        self.context.reset_video(video).map_err(err("applying video settings"))?;
+        self.context
+            .reset_video(video)
+            .map_err(err("applying video settings"))?;
         self.build(cfg)?;
         if was_running {
             self.set_buffer_active(true)?;
@@ -182,13 +204,19 @@ impl Engine {
     fn build(&mut self, cfg: &Config) -> EngineResult<()> {
         self.notes.clear();
         self.generation += 1;
+        self.output_dir = cfg.output_dir.clone();
+        self.extension = cfg.container.extension().to_string();
         let scene_name = format!("rewind-scene-{}", self.generation);
-        let mut scene = self.context.scene(scene_name.as_str(), Some(0)).map_err(err("creating scene"))?;
+        let mut scene = self
+            .context
+            .scene(scene_name.as_str(), Some(0))
+            .map_err(err("creating scene"))?;
         let mut items: Vec<Box<dyn Any>> = Vec::new();
 
         // --- Video ---
         if cfg.capture_mode == CaptureMode::Desktop {
-            let monitors = MonitorCaptureSourceBuilder::get_monitors().map_err(err("listing monitors"))?;
+            let monitors =
+                MonitorCaptureSourceBuilder::get_monitors().map_err(err("listing monitors"))?;
             let monitor = monitors
                 .get(cfg.monitor_index)
                 .or_else(|| monitors.first())
@@ -248,7 +276,9 @@ impl Engine {
             Ok(item) => items.push(Box::new(item)),
             Err(e) if cfg.capture_mode == CaptureMode::Desktop => {
                 // Desktop capture still works without the game hook.
-                self.notes.push(format!("Game capture unavailable ({e}); recording the monitor only."));
+                self.notes.push(format!(
+                    "Game capture unavailable ({e}); recording the monitor only."
+                ));
             }
             Err(e) => return Err(e),
         }
@@ -256,13 +286,23 @@ impl Engine {
         // --- Audio ---
         let mut audio_sources = Vec::new();
         if cfg.audio.desktop_enabled {
-            match self.create_audio("wasapi_output_capture", "rewind-desktop-audio", &mut scene) {
+            match self.create_audio(
+                "wasapi_output_capture",
+                "rewind-desktop-audio",
+                &cfg.audio.desktop_device,
+                &mut scene,
+            ) {
                 Ok(s) => audio_sources.push((AudioKind::Desktop, s)),
                 Err(e) => self.notes.push(format!("Desktop audio unavailable: {e}")),
             }
         }
         if cfg.audio.mic_enabled {
-            match self.create_audio("wasapi_input_capture", "rewind-mic", &mut scene) {
+            match self.create_audio(
+                "wasapi_input_capture",
+                "rewind-mic",
+                &cfg.audio.mic_device,
+                &mut scene,
+            ) {
                 Ok(s) => audio_sources.push((AudioKind::Mic, s)),
                 Err(e) => self.notes.push(format!("Microphone unavailable: {e}")),
             }
@@ -282,32 +322,57 @@ impl Engine {
         Ok(())
     }
 
-    fn create_audio(&self, type_id: &str, name: &str, scene: &mut ObsSceneRef) -> EngineResult<ObsSourceRef> {
+    fn create_audio(
+        &self,
+        type_id: &str,
+        name: &str,
+        device: &str,
+        scene: &mut ObsSceneRef,
+    ) -> EngineResult<ObsSourceRef> {
         let ty = self
             .context
             .source_type(type_id)
             .map_err(err("querying sources"))?
             .ok_or_else(|| format!("OBS runtime has no '{type_id}' source"))?;
         let mut settings = ty.default_settings_mut().map_err(err("source defaults"))?;
-        settings.set_string("device_id", "default").map_err(err("source settings"))?;
-        let source = self.context.create_source(&ty, name, Some(settings)).map_err(err("creating audio source"))?;
-        scene.add(source.clone()).map_err(err("adding audio source"))?;
+        // OBS expects "default" for the Windows default endpoint, or a full WASAPI id.
+        let device = if device.trim().is_empty() {
+            "default"
+        } else {
+            device.trim()
+        };
+        settings
+            .set_string("device_id", device)
+            .map_err(err("source settings"))?;
+        let source = self
+            .context
+            .create_source(&ty, name, Some(settings))
+            .map_err(err("creating audio source"))?;
+        scene
+            .add(source.clone())
+            .map_err(err("adding audio source"))?;
         Ok(source)
     }
 
     fn build_replay(&mut self, cfg: &Config) -> EngineResult<ObsReplayBufferOutputRef> {
         let make = |ctx: &ObsContext| {
-            ctx.replay_buffer_builder("rewind-replay", ObsPath::new(cfg.output_dir.to_string_lossy().as_ref()))
-                .max_time_sec(cfg.buffer_secs as i64)
-                .max_size_mb(cfg.buffer_max_mb as i64)
-                .format("Replay %CCYY-%MM-%DD %hh-%mm-%ss")
-                .extension(cfg.container.extension())
-                .video_bitrate(cfg.bitrate_kbps)
-                .audio_bitrate(cfg.audio.bitrate_kbps)
+            ctx.replay_buffer_builder(
+                "rewind-replay",
+                ObsPath::new(cfg.output_dir.to_string_lossy().as_ref()),
+            )
+            .max_time_sec(cfg.buffer_secs as i64)
+            .max_size_mb(cfg.buffer_max_mb as i64)
+            .format("Replay %CCYY-%MM-%DD %hh-%mm-%ss")
+            .extension(cfg.container.extension())
+            .video_bitrate(cfg.bitrate_kbps)
+            .audio_bitrate(cfg.audio.bitrate_kbps)
         };
         self.cpu_encoding = false;
         self.encoder_label.clear();
-        match make(&self.context).hardware_encoder(hardware_codec(cfg.codec), hardware_preset(cfg.quality)).build() {
+        match make(&self.context)
+            .hardware_encoder(hardware_codec(cfg.codec), hardware_preset(cfg.quality))
+            .build()
+        {
             Ok(r) => {
                 self.encoder_label = format!("{} · GPU", cfg.codec.short_label());
                 Ok(r)
@@ -316,7 +381,10 @@ impl Engine {
                 // CPU encoding is normal on older machines: Arrandale-era Intel chips have no
                 // Quick Sync encoder and many older AMD GPUs have no VCE. Keep the raw OBS
                 // error in the log (useful for bug reports) and tell the user calmly.
-                log::warn!("{} hardware encoder unavailable, falling back to x264: {hw_err}", cfg.codec.label());
+                log::warn!(
+                    "{} hardware encoder unavailable, falling back to x264: {hw_err}",
+                    cfg.codec.label()
+                );
                 let preset = match cfg.quality {
                     Quality::Speed => X264Preset::UltraFast,
                     Quality::Balanced => X264Preset::SuperFast,
@@ -346,7 +414,9 @@ impl Engine {
     }
 
     pub fn set_buffer_active(&self, on: bool) -> EngineResult<()> {
-        let Some(r) = &self.replay else { return Err("replay buffer not created".into()) };
+        let Some(r) = &self.replay else {
+            return Err("replay buffer not created".into());
+        };
         let active = r.is_active().unwrap_or(false);
         match (on, active) {
             (true, false) => r.start().map_err(err("starting replay buffer")),
@@ -356,12 +426,19 @@ impl Engine {
     }
 
     pub fn is_buffer_active(&self) -> bool {
-        self.replay.as_ref().map(|r| r.is_active().unwrap_or(false)).unwrap_or(false)
+        self.replay
+            .as_ref()
+            .map(|r| r.is_active().unwrap_or(false))
+            .unwrap_or(false)
     }
 
     /// A cheap handle that can save the buffer from another thread (saving blocks).
     pub fn saver(&self) -> Option<Saver> {
-        self.replay.clone().map(|r| Saver { replay: r })
+        self.replay.clone().map(|replay| Saver {
+            replay,
+            output_dir: self.output_dir.clone(),
+            extension: self.extension.clone(),
+        })
     }
 
     /// Live volume changes, no rebuild needed.
@@ -385,14 +462,138 @@ fn apply_volume(kind: AudioKind, src: &ObsSourceRef, audio: &AudioConfig) {
 #[derive(Clone)]
 pub struct Saver {
     replay: ObsReplayBufferOutputRef,
+    output_dir: PathBuf,
+    extension: String,
 }
 
+/// Only one save may be in flight at a time: OBS exposes a single `saved` signal and a
+/// single `get_last_replay` path, with no request identity.
+static SAVE_LOCK: Mutex<()> = Mutex::new(());
+
 impl Saver {
-    /// Blocks until OBS has written the clip (up to 30 s). Call from a worker thread.
+    /// Asks OBS to write the current buffer and waits for the finished file. Call from a
+    /// worker thread.
+    ///
+    /// OBS does not write the clip immediately: `save` only marks the current timestamp,
+    /// and the mux happens on the next encoded frame. The wrapper's own completion wait is
+    /// therefore easy to miss, and when it times out the file is often already on disk.
+    /// We trigger the save without that wait, watch OBS's `saved` signal, and fall back to
+    /// recognising the finished file by its extension and modification time.
     pub fn save(&self) -> EngineResult<PathBuf> {
+        let _guard = SAVE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         if !self.replay.is_active().unwrap_or(false) {
             return Err("replay buffer is off — turn it on first".into());
         }
-        self.replay.save_buffer().map(|p| p.to_path_buf()).map_err(err("saving replay"))
+
+        let started = SystemTime::now();
+        let before = self.snapshot();
+        // Subscribe before asking OBS to save, so a very fast save cannot be lost.
+        let saved = self
+            .replay
+            .replay_signals()
+            .on_saved()
+            .map_err(err("waiting for replay save"))?;
+
+        // A 1 ms wait is enough to get the request into OBS; the native save itself is
+        // deferred to the next encoded packet. Treat that timeout as "started", not as a
+        // failure: the file is usually written a second or two later.
+        match self
+            .replay
+            .save_buffer_with_timeout(Duration::from_millis(1))
+        {
+            Ok(path) => return Ok(path.to_path_buf()),
+            Err(ObsError::OutputOperationTimeout { operation, .. })
+                if operation == "replay-save" => {}
+            Err(e) => return Err(format!("saving replay: {e}")),
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut candidate: Option<(PathBuf, u64)> = None;
+        let mut stable = 0u8;
+        loop {
+            let completed = saved.try_recv().is_ok();
+            if let Some(path) = self.newest_clip(started, &before) {
+                let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                if completed {
+                    return Ok(path);
+                }
+                // The signal can be missed, so also accept a file whose size has stopped
+                // growing. Three quiet polls (~300 ms) avoid returning a half-written clip.
+                match &candidate {
+                    Some((prev, prev_size)) if *prev == path && *prev_size == size && size > 0 => {
+                        stable += 1;
+                        if stable >= 3 {
+                            return Ok(path);
+                        }
+                    }
+                    _ => {
+                        candidate = Some((path, size));
+                        stable = 0;
+                    }
+                }
+            }
+            if Instant::now() >= deadline {
+                return Err(
+                    "OBS didn't finish writing the clip. The replay buffer is still on; try again in a moment. If it keeps happening, check that the clip folder is writable."
+                        .into(),
+                );
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    fn snapshot(&self) -> HashSet<PathBuf> {
+        std::fs::read_dir(&self.output_dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| self.is_clip(path))
+            .collect()
+    }
+
+    fn is_clip(&self, path: &Path) -> bool {
+        path.is_file()
+            && path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| ext.eq_ignore_ascii_case(&self.extension))
+                .unwrap_or(false)
+    }
+
+    /// Newest clip written since the save request. Existing files are only accepted when
+    /// their timestamp moved forward, so a just-finished previous clip is never returned.
+    fn newest_clip(&self, started: SystemTime, before: &HashSet<PathBuf>) -> Option<PathBuf> {
+        let cutoff = started
+            .checked_sub(Duration::from_secs(2))
+            .unwrap_or(started);
+        let mut best: Option<(PathBuf, SystemTime)> = None;
+        for entry in std::fs::read_dir(&self.output_dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            let path = entry.path();
+            if !self.is_clip(&path) {
+                continue;
+            }
+            let Ok(modified) = entry.metadata().and_then(|m| m.modified()) else {
+                continue;
+            };
+            if modified < cutoff {
+                continue;
+            }
+            if before.contains(&path) && modified < started {
+                continue;
+            }
+            if best
+                .as_ref()
+                .map(|(_, newest)| modified > *newest)
+                .unwrap_or(true)
+            {
+                best = Some((path, modified));
+            }
+        }
+        best.map(|(path, _)| path)
     }
 }

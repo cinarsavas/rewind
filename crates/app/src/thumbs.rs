@@ -12,9 +12,14 @@ use std::time::SystemTime;
 use eframe::egui;
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::SIZE;
-use windows::Win32::Graphics::Gdi::{DeleteObject, GetDC, GetDIBits, GetObjectW, ReleaseDC, BITMAP, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HGDIOBJ};
+use windows::Win32::Graphics::Gdi::{
+    DeleteObject, GetDC, GetDIBits, GetObjectW, ReleaseDC, BITMAP, BITMAPINFO, BITMAPINFOHEADER,
+    BI_RGB, DIB_RGB_COLORS, HGDIOBJ,
+};
 use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
-use windows::Win32::UI::Shell::{IShellItemImageFactory, SHCreateItemFromParsingName, SIIGBF_BIGGERSIZEOK, SIIGBF_THUMBNAILONLY};
+use windows::Win32::UI::Shell::{
+    IShellItemImageFactory, SHCreateItemFromParsingName, SIIGBF_BIGGERSIZEOK, SIIGBF_THUMBNAILONLY,
+};
 
 const THUMB_W: i32 = 320;
 const THUMB_H: i32 = 180;
@@ -57,11 +62,21 @@ impl Thumbs {
                 }
             })
             .ok();
-        Self { tx, rx, textures: HashMap::new(), requested: HashSet::new() }
+        Self {
+            tx,
+            rx,
+            textures: HashMap::new(),
+            requested: HashSet::new(),
+        }
     }
 
     /// Texture for this clip if its thumbnail is ready; otherwise queue it (once) and return None.
-    pub fn get(&mut self, ctx: &egui::Context, path: &Path, modified: SystemTime) -> Option<egui::TextureHandle> {
+    pub fn get(
+        &mut self,
+        ctx: &egui::Context,
+        path: &Path,
+        modified: SystemTime,
+    ) -> Option<egui::TextureHandle> {
         self.drain(ctx);
         let key: Key = (path.to_path_buf(), Some(modified));
         if let Some(t) = self.textures.get(&key) {
@@ -96,13 +111,31 @@ impl Thumbs {
 
 fn shell_thumbnail(path: &Path) -> Option<Raw> {
     unsafe {
-        let wide: Vec<u16> = path.to_string_lossy().encode_utf16().chain(std::iter::once(0)).collect();
-        let factory: IShellItemImageFactory = SHCreateItemFromParsingName(PCWSTR(wide.as_ptr()), None).ok()?;
-        let hbmp = factory.GetImage(SIZE { cx: THUMB_W, cy: THUMB_H }, SIIGBF_THUMBNAILONLY | SIIGBF_BIGGERSIZEOK).ok()?;
+        let wide: Vec<u16> = path
+            .to_string_lossy()
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let factory: IShellItemImageFactory =
+            SHCreateItemFromParsingName(PCWSTR(wide.as_ptr()), None).ok()?;
+        let hbmp = factory
+            .GetImage(
+                SIZE {
+                    cx: THUMB_W,
+                    cy: THUMB_H,
+                },
+                SIIGBF_THUMBNAILONLY | SIIGBF_BIGGERSIZEOK,
+            )
+            .ok()?;
         let obj = HGDIOBJ(hbmp.0);
 
         let mut bm: BITMAP = zeroed();
-        if GetObjectW(obj, size_of::<BITMAP>() as i32, Some(&mut bm as *mut BITMAP as *mut c_void)) == 0 {
+        if GetObjectW(
+            obj,
+            size_of::<BITMAP>() as i32,
+            Some(&mut bm as *mut BITMAP as *mut c_void),
+        ) == 0
+        {
             let _ = DeleteObject(obj);
             return None;
         }
@@ -120,7 +153,15 @@ fn shell_thumbnail(path: &Path) -> Option<Raw> {
         bmi.bmiHeader.biCompression = BI_RGB.0;
         let mut px = vec![0u8; (w * h * 4) as usize];
         let hdc = GetDC(None);
-        let lines = GetDIBits(hdc, hbmp, 0, h as u32, Some(px.as_mut_ptr() as *mut c_void), &mut bmi, DIB_RGB_COLORS);
+        let lines = GetDIBits(
+            hdc,
+            hbmp,
+            0,
+            h as u32,
+            Some(px.as_mut_ptr() as *mut c_void),
+            &mut bmi,
+            DIB_RGB_COLORS,
+        );
         ReleaseDC(None, hdc);
         let _ = DeleteObject(obj);
         if lines == 0 {
@@ -131,6 +172,10 @@ fn shell_thumbnail(path: &Path) -> Option<Raw> {
             p.swap(0, 2);
             p[3] = 255;
         }
-        Some(Raw { w: w as usize, h: h as usize, rgba: px })
+        Some(Raw {
+            w: w as usize,
+            h: h as usize,
+            rgba: px,
+        })
     }
 }

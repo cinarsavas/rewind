@@ -30,7 +30,10 @@ fn push_dir(dir: &Path, group: &str, out: &mut Vec<Clip>) {
         let Ok(meta) = entry.metadata() else { continue };
         if meta.is_file() && is_clip(&path) {
             out.push(Clip {
-                name: path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+                name: path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
                 group: group.to_string(),
                 size_bytes: meta.len(),
                 modified: meta.modified().unwrap_or(SystemTime::UNIX_EPOCH),
@@ -52,7 +55,11 @@ pub fn scan(dir: &Path) -> Vec<Clip> {
             }
         }
     }
-    clips.sort_by(|a, b| b.modified.cmp(&a.modified).then_with(|| a.name.cmp(&b.name)));
+    clips.sort_by(|a, b| {
+        b.modified
+            .cmp(&a.modified)
+            .then_with(|| a.name.cmp(&b.name))
+    });
     clips
 }
 
@@ -86,10 +93,20 @@ pub fn human_age(now: SystemTime, then: SystemTime) -> String {
 pub fn sanitize_file_name(name: &str) -> String {
     let cleaned: String = name
         .chars()
-        .map(|c| if "<>:\"/\\|?*".contains(c) || c.is_control() { '_' } else { c })
+        .map(|c| {
+            if "<>:\"/\\|?*".contains(c) || c.is_control() {
+                '_'
+            } else {
+                c
+            }
+        })
         .collect();
     let trimmed = cleaned.trim().trim_end_matches('.').trim().to_string();
-    if trimmed.is_empty() { "clip".into() } else { trimmed }
+    if trimmed.is_empty() {
+        "clip".into()
+    } else {
+        trimmed
+    }
 }
 
 /// Return `dir/stem.ext`, or `dir/stem (2).ext` etc. if that already exists.
@@ -125,7 +142,10 @@ mod tests {
         fs::create_dir_all(d.join("Hades").join("deep")).unwrap();
         fs::write(d.join("Hades").join("deep").join("c.mp4"), b"1").unwrap();
         let clips = scan(&d);
-        let mut names: Vec<_> = clips.iter().map(|c| (c.group.as_str(), c.name.as_str())).collect();
+        let mut names: Vec<_> = clips
+            .iter()
+            .map(|c| (c.group.as_str(), c.name.as_str()))
+            .collect();
         names.sort();
         assert_eq!(names, vec![("", "a.mp4"), ("Hades", "b.MKV")]);
         let _ = fs::remove_dir_all(d);
@@ -145,7 +165,10 @@ mod tests {
         assert_eq!(human_age(now, now), "just now");
         assert_eq!(human_age(now, now - Duration::from_secs(300)), "5 min ago");
         assert_eq!(human_age(now, now - Duration::from_secs(7_300)), "2 h ago");
-        assert_eq!(human_age(now, now - Duration::from_secs(200_000)), "2 d ago");
+        assert_eq!(
+            human_age(now, now - Duration::from_secs(200_000)),
+            "2 d ago"
+        );
     }
 
     #[test]

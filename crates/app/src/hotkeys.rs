@@ -3,8 +3,8 @@
 use std::str::FromStr;
 use std::sync::mpsc::{channel, Receiver};
 
-use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use eframe::egui;
+use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use rewind_core::hotkey::Hotkey;
 
@@ -23,7 +23,11 @@ pub struct Hotkeys {
 fn to_code(key: &str) -> Option<Code> {
     let name = if key.len() == 1 {
         let c = key.chars().next()?;
-        if c.is_ascii_digit() { format!("Digit{c}") } else { format!("Key{c}") }
+        if c.is_ascii_digit() {
+            format!("Digit{c}")
+        } else {
+            format!("Key{c}")
+        }
     } else {
         match key {
             "Up" => "ArrowUp".to_string(),
@@ -51,7 +55,10 @@ fn to_hotkey(h: &Hotkey) -> Result<HotKey, String> {
         mods |= Modifiers::META;
     }
     let code = to_code(&h.key).ok_or_else(|| format!("key '{}' isn't supported", h.key))?;
-    Ok(HotKey::new(if mods.is_empty() { None } else { Some(mods) }, code))
+    Ok(HotKey::new(
+        if mods.is_empty() { None } else { Some(mods) },
+        code,
+    ))
 }
 
 impl Hotkeys {
@@ -63,7 +70,11 @@ impl Hotkeys {
             let _ = tx.send(e);
             ctx.request_repaint();
         }));
-        Ok(Self { manager, registered: Vec::new(), rx })
+        Ok(Self {
+            manager,
+            registered: Vec::new(),
+            rx,
+        })
     }
 
     /// Replace all registered hotkeys. Returns a message per hotkey that couldn't be
@@ -77,7 +88,9 @@ impl Hotkeys {
             match to_hotkey(h) {
                 Ok(hk) => match self.manager.register(hk) {
                     Ok(()) => self.registered.push((hk, hk.id(), *action)),
-                    Err(e) => problems.push(format!("{h} couldn't be registered ({e}). Another app may be using it.")),
+                    Err(e) => problems.push(format!(
+                        "{h} couldn't be registered ({e}). Another app may be using it."
+                    )),
                 },
                 Err(e) => problems.push(e),
             }

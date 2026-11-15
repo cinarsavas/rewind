@@ -4,10 +4,12 @@
 pub mod config;
 pub mod estimate;
 pub mod hotkey;
+pub mod i18n;
 pub mod library;
 pub mod packs;
 pub mod perf;
 pub mod theme;
 pub mod toast;
 pub mod trim;
+pub mod version;
 pub mod voice;

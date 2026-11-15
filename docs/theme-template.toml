@@ -53,3 +53,36 @@ danger = "#ff5d6c"
 
 # Warnings and things that need attention.
 warn = "#f2b84b"
+
+# ---------------------------------------------------------------- layout
+#
+# Everything in this section is optional. Delete the section, or any single
+# line, to keep Rewind's default look. Values are in points (1 point = 1 px at
+# 100% Windows scaling) and are clamped to a safe range.
+
+[layout]
+# Width of the left navigation bar. 160..360.
+nav_width = 236
+
+# Maximum width of the centred page column. 520..1600.
+content_width = 880
+
+# Left/right margin around the page content. 8..80.
+page_margin = 28
+
+# Corner radius of cards, dialogs and windows. 0..32.
+card_radius = 16
+
+# Optional background image, relative to this theme file. PNG, JPEG, BMP, GIF
+# and WebP work. Example: background = "sunset.jpg"
+background = ""
+
+# Solid background colour instead of the panel colour. Empty = use panel.
+background_color = ""
+
+# Vertical gradient. Set BOTH colours to use it; one alone is ignored.
+background_top = ""
+background_bottom = ""
+
+# How strongly a background image is dimmed behind the UI, 0.0..=0.9.
+background_dim = 0.35

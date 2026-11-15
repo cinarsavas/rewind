@@ -22,7 +22,11 @@ pub fn suggested_bitrate_kbps(height: u32, fps: u32) -> u32 {
         1081..=1440 => 28_000,
         _ => 50_000,
     };
-    let scaled = if fps > 60 { base as f32 * (1.0 + (fps as f32 - 60.0) / 180.0) } else { base as f32 };
+    let scaled = if fps > 60 {
+        base as f32 * (1.0 + (fps as f32 - 60.0) / 180.0)
+    } else {
+        base as f32
+    };
     (scaled as u32 / 500) * 500
 }
 

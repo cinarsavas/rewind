@@ -36,12 +36,68 @@ pub struct ThemeColors {
     pub warn: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ThemeFile {
     pub name: String,
     #[serde(default)]
     pub author: String,
     pub colors: ThemeColors,
+    /// Optional layout and background overrides. Missing values keep the built-in layout.
+    #[serde(default)]
+    pub layout: ThemeLayout,
+}
+
+/// Layout and background knobs a theme can change, Hydra-style. Every value is optional in
+/// the TOML file; the defaults reproduce Rewind's normal look.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ThemeLayout {
+    /// Width of the left navigation bar in points.
+    pub nav_width: f32,
+    /// Maximum width of the centred content column in points.
+    pub content_width: f32,
+    /// Outer page margin in points.
+    pub page_margin: f32,
+    /// Corner radius of cards and dialogs.
+    pub card_radius: u8,
+    /// Background image file, relative to the theme file. Empty = no image.
+    pub background: String,
+    /// Solid page background. Empty = use the panel colour.
+    pub background_color: String,
+    /// Gradient start colour. Set both top and bottom for a vertical gradient.
+    pub background_top: String,
+    /// Gradient end colour.
+    pub background_bottom: String,
+    /// How strongly the background image is dimmed for readable text, 0..=1.
+    pub background_dim: f32,
+}
+
+impl Default for ThemeLayout {
+    fn default() -> Self {
+        Self {
+            nav_width: 236.0,
+            content_width: 880.0,
+            page_margin: 28.0,
+            card_radius: 16,
+            background: String::new(),
+            background_color: String::new(),
+            background_top: String::new(),
+            background_bottom: String::new(),
+            background_dim: 0.35,
+        }
+    }
+}
+
+impl ThemeLayout {
+    /// Clamp hand-edited values into a usable range.
+    pub fn sanitized(mut self) -> ThemeLayout {
+        self.nav_width = self.nav_width.clamp(160.0, 360.0);
+        self.content_width = self.content_width.clamp(520.0, 1600.0);
+        self.page_margin = self.page_margin.clamp(8.0, 80.0);
+        self.card_radius = self.card_radius.clamp(0, 32);
+        self.background_dim = self.background_dim.clamp(0.0, 0.9);
+        self
+    }
 }
 
 /// Every colour the UI uses, base colours from the theme file plus derived ones.
@@ -80,7 +136,9 @@ pub enum ThemeError {
 impl std::fmt::Display for ThemeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ThemeError::BadColor { field, value } => write!(f, "'{field}' isn't a valid colour: {value:?} (use #rrggbb)"),
+            ThemeError::BadColor { field, value } => {
+                write!(f, "'{field}' isn't a valid colour: {value:?} (use #rrggbb)")
+            }
             ThemeError::Unreadable(m) => write!(f, "{m}"),
             ThemeError::Parse(m) => write!(f, "theme file couldn't be read: {m}"),
         }
@@ -103,13 +161,21 @@ pub fn parse_hex(s: &str) -> Option<Rgb> {
 }
 
 pub fn mix(a: Rgb, b: Rgb, t: f32) -> Rgb {
-    let m = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round().clamp(0.0, 255.0) as u8;
+    let m = |x: u8, y: u8| {
+        (x as f32 + (y as f32 - x as f32) * t)
+            .round()
+            .clamp(0.0, 255.0) as u8
+    };
     [m(a[0], b[0]), m(a[1], b[1]), m(a[2], b[2])]
 }
 
 fn channel(c: u8) -> f32 {
     let c = c as f32 / 255.0;
-    if c <= 0.03928 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    if c <= 0.03928 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
 }
 
 pub fn luminance(c: Rgb) -> f32 {
@@ -125,7 +191,9 @@ pub fn contrast(a: Rgb, b: Rgb) -> f32 {
 
 impl Palette {
     pub fn default_dark() -> Palette {
-        ThemeFile::default_theme().to_palette().expect("built-in theme is valid")
+        ThemeFile::default_theme()
+            .to_palette()
+            .expect("built-in theme is valid")
     }
 
     fn derive(base: [Rgb; 11]) -> Palette {
@@ -134,13 +202,31 @@ impl Palette {
         // Whichever of dark or white text reads better on the accent colour.
         const DARK: Rgb = [0x05, 0x14, 0x10];
         const WHITE: Rgb = [0xff, 0xff, 0xff];
-        let on_accent = if contrast(DARK, accent) >= contrast(WHITE, accent) { DARK } else { WHITE };
+        let on_accent = if contrast(DARK, accent) >= contrast(WHITE, accent) {
+            DARK
+        } else {
+            WHITE
+        };
         Palette {
-            nav, panel, card, card_hi, stroke, text, muted, faint, accent, danger, warn,
+            nav,
+            panel,
+            card,
+            card_hi,
+            stroke,
+            text,
+            muted,
+            faint,
+            accent,
+            danger,
+            warn,
             accent_dim: mix(card, accent, 0.32),
             on_accent,
             // Inset areas (chips, tracks): darker than the panel, but gently so on light themes.
-            deep: mix(panel, BLACK, if luminance(panel) > 0.5 { 0.07 } else { 0.35 }),
+            deep: mix(
+                panel,
+                BLACK,
+                if luminance(panel) > 0.5 { 0.07 } else { 0.35 },
+            ),
             accent_tint: mix(nav, accent, 0.14),
             hero_on: mix(card, accent, 0.07),
             danger_bg: mix(card, danger, 0.18),
@@ -170,17 +256,26 @@ impl ThemeFile {
                 danger: c("#ff5d6c"),
                 warn: c("#f2b84b"),
             },
+            layout: ThemeLayout::default(),
         }
     }
 
     pub fn from_toml(text: &str) -> Result<ThemeFile, ThemeError> {
-        toml::from_str(text).map_err(|e| ThemeError::Parse(e.to_string()))
+        let mut file: ThemeFile =
+            toml::from_str(text).map_err(|e| ThemeError::Parse(e.to_string()))?;
+        file.layout = file.layout.sanitized();
+        Ok(file)
     }
 
     /// Validate colours and readability, then derive the full palette.
     pub fn to_palette(&self) -> Result<Palette, ThemeError> {
         let c = &self.colors;
-        let get = |field: &'static str, value: &String| parse_hex(value).ok_or_else(|| ThemeError::BadColor { field, value: value.clone() });
+        let get = |field: &'static str, value: &String| {
+            parse_hex(value).ok_or_else(|| ThemeError::BadColor {
+                field,
+                value: value.clone(),
+            })
+        };
         let base = [
             get("nav", &c.nav)?,
             get("panel", &c.panel)?,
@@ -196,16 +291,24 @@ impl ThemeFile {
         ];
         let p = Palette::derive(base);
         if contrast(p.text, p.card) < 4.5 {
-            return Err(ThemeError::Unreadable("text on cards is too low-contrast to read (needs at least 4.5:1)".into()));
+            return Err(ThemeError::Unreadable(
+                "text on cards is too low-contrast to read (needs at least 4.5:1)".into(),
+            ));
         }
         if contrast(p.muted, p.card) < 3.0 {
-            return Err(ThemeError::Unreadable("secondary text is too faint against cards (needs at least 3:1)".into()));
+            return Err(ThemeError::Unreadable(
+                "secondary text is too faint against cards (needs at least 3:1)".into(),
+            ));
         }
         if contrast(p.muted, p.deep) < 3.0 {
-            return Err(ThemeError::Unreadable("secondary text is too faint on chips and tracks (needs at least 3:1)".into()));
+            return Err(ThemeError::Unreadable(
+                "secondary text is too faint on chips and tracks (needs at least 3:1)".into(),
+            ));
         }
         if contrast(p.accent, p.card) < 2.5 {
-            return Err(ThemeError::Unreadable("the accent colour disappears against cards (needs at least 2.5:1)".into()));
+            return Err(ThemeError::Unreadable(
+                "the accent colour disappears against cards (needs at least 2.5:1)".into(),
+            ));
         }
         Ok(p)
     }
@@ -253,7 +356,10 @@ mod tests {
         t.colors.faint = "#8a92a5".into();
         t.colors.accent = "#0e9a73".into();
         let p = t.to_palette().unwrap();
-        assert!(luminance(p.deep) > 0.6, "inset colour must stay light on a light theme");
+        assert!(
+            luminance(p.deep) > 0.6,
+            "inset colour must stay light on a light theme"
+        );
         assert!(contrast(p.muted, p.deep) >= 3.0);
     }
 
@@ -271,7 +377,10 @@ mod tests {
     fn rejects_bad_colours_and_unreadable_themes() {
         let mut t = ThemeFile::default_theme();
         t.colors.card = "blue".into();
-        assert!(matches!(t.to_palette(), Err(ThemeError::BadColor { field: "card", .. })));
+        assert!(matches!(
+            t.to_palette(),
+            Err(ThemeError::BadColor { field: "card", .. })
+        ));
         let mut t = ThemeFile::default_theme();
         t.colors.text = "#1a1e28".into();
         assert!(matches!(t.to_palette(), Err(ThemeError::Unreadable(_))));
@@ -282,7 +391,24 @@ mod tests {
         let t = ThemeFile::default_theme();
         let text = toml::to_string_pretty(&t).unwrap();
         assert_eq!(ThemeFile::from_toml(&text).unwrap(), t);
-        assert!(matches!(ThemeFile::from_toml("name = 3"), Err(ThemeError::Parse(_))));
+        assert!(matches!(
+            ThemeFile::from_toml("name = 3"),
+            Err(ThemeError::Parse(_))
+        ));
+    }
+
+    #[test]
+    fn layout_defaults_and_sanitizing() {
+        let mut t = ThemeFile::default_theme();
+        assert_eq!(t.layout, ThemeLayout::default());
+        t.layout.nav_width = 9_000.0;
+        t.layout.page_margin = -4.0;
+        t.layout.background_dim = 5.0;
+        let text = toml::to_string_pretty(&t).unwrap();
+        let back = ThemeFile::from_toml(&text).unwrap();
+        assert_eq!(back.layout.nav_width, 360.0);
+        assert_eq!(back.layout.page_margin, 8.0);
+        assert_eq!(back.layout.background_dim, 0.9);
     }
 
     #[test]

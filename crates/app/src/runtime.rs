@@ -13,7 +13,9 @@ pub fn install_blocking() -> Result<(), String> {
         .enable_all()
         .build()
         .map_err(|e| format!("starting async runtime: {e}"))?;
-    rt.block_on(ObsBootstrapper::bootstrap(&ObsBootstrapperOptions::default()))
-        .map(|_| ())
-        .map_err(|e| format!("downloading the OBS runtime failed: {e}"))
+    rt.block_on(ObsBootstrapper::bootstrap(
+        &ObsBootstrapperOptions::default(),
+    ))
+    .map(|_| ())
+    .map_err(|e| format!("downloading the OBS runtime failed: {e}"))
 }

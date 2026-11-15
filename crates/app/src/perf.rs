@@ -23,7 +23,8 @@ fn ft(f: FILETIME) -> u64 {
 
 fn process_cpu_time() -> u64 {
     unsafe {
-        let (mut c, mut e, mut k, mut u): (FILETIME, FILETIME, FILETIME, FILETIME) = (zeroed(), zeroed(), zeroed(), zeroed());
+        let (mut c, mut e, mut k, mut u): (FILETIME, FILETIME, FILETIME, FILETIME) =
+            (zeroed(), zeroed(), zeroed(), zeroed());
         if GetProcessTimes(GetCurrentProcess(), &mut c, &mut e, &mut k, &mut u) != 0 {
             ft(k) + ft(u)
         } else {
@@ -49,7 +50,9 @@ impl Sampler {
         Self {
             last_cpu: process_cpu_time(),
             last_wall: Instant::now(),
-            cores: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1),
+            cores: std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1),
             cpu_pct: 0.0,
             mem_mb: 0,
         }
@@ -62,7 +65,11 @@ impl Sampler {
             return;
         }
         let cpu = process_cpu_time();
-        let pct = cpu_percent(cpu.saturating_sub(self.last_cpu), (wall.as_nanos() / 100) as u64, self.cores);
+        let pct = cpu_percent(
+            cpu.saturating_sub(self.last_cpu),
+            (wall.as_nanos() / 100) as u64,
+            self.cores,
+        );
         self.cpu_pct = smooth(self.cpu_pct, pct, 0.6);
         self.mem_mb = working_set_mb();
         self.last_cpu = cpu;

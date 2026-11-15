@@ -41,7 +41,10 @@ impl VoiceShared {
         f32::from_bits(self.level_bits.load(Ordering::Relaxed))
     }
     pub fn status(&self) -> VoiceStatus {
-        self.status.lock().map(|s| s.clone()).unwrap_or(VoiceStatus::Stopped)
+        self.status
+            .lock()
+            .map(|s| s.clone())
+            .unwrap_or(VoiceStatus::Stopped)
     }
     fn set_status(&self, s: VoiceStatus) {
         if let Ok(mut g) = self.status.lock() {
@@ -90,10 +93,13 @@ impl Vosk {
         }
         unsafe {
             // 0x8 = LOAD_WITH_ALTERED_SEARCH_PATH, so libvosk finds its sibling DLLs.
-            let lib: Library = libloading::os::windows::Library::load_with_flags(&dll, 0x8).map_err(|e| format!("couldn't load libvosk.dll: {e}"))?.into();
+            let lib: Library = libloading::os::windows::Library::load_with_flags(&dll, 0x8)
+                .map_err(|e| format!("couldn't load libvosk.dll: {e}"))?
+                .into();
             macro_rules! sym {
                 ($name:literal) => {
-                    *lib.get(concat!($name, "\0").as_bytes()).map_err(|e| format!("libvosk.dll is missing {}: {e}", $name))?
+                    *lib.get(concat!($name, "\0").as_bytes())
+                        .map_err(|e| format!("libvosk.dll is missing {}: {e}", $name))?
                 };
             }
             Ok(Vosk {
@@ -113,19 +119,78 @@ impl Vosk {
 }
 
 fn c_str(p: *const c_char) -> String {
-    if p.is_null() { String::new() } else { unsafe { CStr::from_ptr(p).to_string_lossy().into_owned() } }
+    if p.is_null() {
+        String::new()
+    } else {
+        unsafe { CStr::from_ptr(p).to_string_lossy().into_owned() }
+    }
+}
+
+/// The 8.3 short form of a path. Vosk opens its model files through the C library, which
+/// on some Windows 10 machines cannot handle non-ASCII paths (a Turkish user name, for
+/// example). The short form is always plain ASCII, so the model loads everywhere.
+fn short_path(path: &Path) -> PathBuf {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    use windows_sys::Win32::Storage::FileSystem::GetShortPathNameW;
+
+    let wide: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let mut buf = vec![0u16; 32_768];
+    let n = unsafe { GetShortPathNameW(wide.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) };
+    if n == 0 || n as usize >= buf.len() {
+        return path.to_path_buf();
+    }
+    PathBuf::from(std::ffi::OsString::from_wide(&buf[..n as usize]))
+}
+
+/// Open the configured microphone, or the Windows default when `device_id` is empty.
+fn open_capture_device(
+    enumerator: &DeviceEnumerator,
+    device_id: &str,
+) -> Result<wasapi::Device, String> {
+    if device_id.trim().is_empty() {
+        return enumerator
+            .get_default_device(Direction::Capture)
+            .map_err(|_| "no microphone found".to_string());
+    }
+    let collection = enumerator
+        .get_device_collection(Direction::Capture)
+        .map_err(|e| format!("audio devices: {e}"))?;
+    for device in &collection {
+        let Ok(device) = device else { continue };
+        if device.get_id().ok().as_deref() == Some(device_id) {
+            return Ok(device);
+        }
+    }
+    // The chosen mic was unplugged: fall back to the default instead of going silent.
+    enumerator
+        .get_default_device(Direction::Capture)
+        .map_err(|_| "no microphone found".to_string())
 }
 
 /// Start listening on a background thread. `runtime_dir` holds libvosk.dll, `model_dir` the
-/// unpacked language model.
-pub fn start(cfg: &VoiceConfig, runtime_dir: PathBuf, model_dir: PathBuf, ctx: egui::Context) -> VoiceHandle {
-    let shared = Arc::new(VoiceShared { stop: AtomicBool::new(false), level_bits: AtomicU32::new(0), status: Mutex::new(VoiceStatus::Starting) });
+/// unpacked language model, `device_id` the chosen microphone (empty = Windows default).
+pub fn start(
+    cfg: &VoiceConfig,
+    runtime_dir: PathBuf,
+    model_dir: PathBuf,
+    device_id: String,
+    ctx: egui::Context,
+) -> VoiceHandle {
+    let shared = Arc::new(VoiceShared {
+        stop: AtomicBool::new(false),
+        level_bits: AtomicU32::new(0),
+        status: Mutex::new(VoiceStatus::Starting),
+    });
     let (tx, rx) = channel();
     let (cfg, sh) = (cfg.clone(), shared.clone());
     std::thread::Builder::new()
         .name("rewind-voice".into())
         .spawn(move || {
-            let result = run(&cfg, &runtime_dir, &model_dir, &sh, &tx, &ctx);
+            let result = run(&cfg, &runtime_dir, &model_dir, &device_id, &sh, &tx, &ctx);
             sh.set_status(match result {
                 Ok(()) => VoiceStatus::Stopped,
                 Err(e) => VoiceStatus::Error(e),
@@ -133,13 +198,26 @@ pub fn start(cfg: &VoiceConfig, runtime_dir: PathBuf, model_dir: PathBuf, ctx: e
             ctx.request_repaint();
         })
         .ok();
-    VoiceHandle { shared, triggers: rx }
+    VoiceHandle {
+        shared,
+        triggers: rx,
+    }
 }
 
-fn run(cfg: &VoiceConfig, runtime_dir: &Path, model_dir: &Path, sh: &Arc<VoiceShared>, tx: &std::sync::mpsc::Sender<()>, ctx: &egui::Context) -> Result<(), String> {
+fn run(
+    cfg: &VoiceConfig,
+    runtime_dir: &Path,
+    model_dir: &Path,
+    device_id: &str,
+    sh: &Arc<VoiceShared>,
+    tx: &std::sync::mpsc::Sender<()>,
+    ctx: &egui::Context,
+) -> Result<(), String> {
     let vosk = Vosk::load(runtime_dir)?;
     unsafe { (vosk.set_log_level)(-1) };
-    let model_path = CString::new(model_dir.to_string_lossy().as_bytes()).map_err(|_| "bad model path")?;
+    let model_short = short_path(model_dir);
+    let model_path =
+        CString::new(model_short.to_string_lossy().as_bytes()).map_err(|_| "bad model path")?;
     let model = unsafe { (vosk.model_new)(model_path.as_ptr()) };
     if model.is_null() {
         return Err("couldn't load the language model (re-download it from Add-ons)".into());
@@ -150,7 +228,7 @@ fn run(cfg: &VoiceConfig, runtime_dir: &Path, model_dir: &Path, sh: &Arc<VoiceSh
         unsafe { (vosk.model_free)(model) };
         return Err("couldn't start the recogniser".into());
     }
-    let outcome = listen(&vosk, rec, cfg, sh, tx, ctx);
+    let outcome = listen(&vosk, rec, cfg, device_id, sh, tx, ctx);
     unsafe {
         (vosk.rec_free)(rec);
         (vosk.model_free)(model);
@@ -158,21 +236,49 @@ fn run(cfg: &VoiceConfig, runtime_dir: &Path, model_dir: &Path, sh: &Arc<VoiceSh
     outcome
 }
 
-fn listen(vosk: &Vosk, rec: *mut c_void, cfg: &VoiceConfig, sh: &Arc<VoiceShared>, tx: &std::sync::mpsc::Sender<()>, ctx: &egui::Context) -> Result<(), String> {
-    initialize_mta().ok().map_err(|e| format!("audio init: {e}"))?;
+fn listen(
+    vosk: &Vosk,
+    rec: *mut c_void,
+    cfg: &VoiceConfig,
+    device_id: &str,
+    sh: &Arc<VoiceShared>,
+    tx: &std::sync::mpsc::Sender<()>,
+    ctx: &egui::Context,
+) -> Result<(), String> {
+    initialize_mta()
+        .ok()
+        .map_err(|e| format!("audio init: {e}"))?;
     let enumerator = DeviceEnumerator::new().map_err(|e| format!("audio devices: {e}"))?;
-    let device = enumerator.get_default_device(Direction::Capture).map_err(|_| "no microphone found".to_string())?;
-    let mut client = device.get_iaudioclient().map_err(|e| format!("microphone: {e}"))?;
+    let device = open_capture_device(&enumerator, device_id)?;
+    let mut client = device
+        .get_iaudioclient()
+        .map_err(|e| format!("microphone: {e}"))?;
     // Ask Windows to hand us 16 kHz mono 16-bit directly (it converts for us).
     let format = WaveFormat::new(16, 16, SampleType::Int, SAMPLE_RATE, 1, None);
-    let (_, min_period) = client.get_device_period().map_err(|e| format!("microphone: {e}"))?;
+    let (_, min_period) = client
+        .get_device_period()
+        .map_err(|e| format!("microphone: {e}"))?;
     client
-        .initialize_client(&format, Direction::Capture, StreamMode::EventsShared { autoconvert: true, buffer_duration_hns: min_period }, None)
+        .initialize_client(
+            &format,
+            Direction::Capture,
+            StreamMode::EventsShared {
+                autoconvert: true,
+                buffer_duration_hns: min_period,
+            },
+            None,
+        )
         .map_err(|e| format!("couldn't open the microphone: {e}"))?;
-    let event = client.set_get_eventhandle().map_err(|e| format!("microphone: {e}"))?;
-    let capture = client.get_audiocaptureclient().map_err(|e| format!("microphone: {e}"))?;
+    let event = client
+        .set_get_eventhandle()
+        .map_err(|e| format!("microphone: {e}"))?;
+    let capture = client
+        .get_audiocaptureclient()
+        .map_err(|e| format!("microphone: {e}"))?;
     let mut queue: VecDeque<u8> = VecDeque::with_capacity(SAMPLE_RATE * 2);
-    client.start_stream().map_err(|e| format!("microphone: {e}"))?;
+    client
+        .start_stream()
+        .map_err(|e| format!("microphone: {e}"))?;
 
     sh.set_status(VoiceStatus::Listening);
     ctx.request_repaint();
@@ -184,7 +290,9 @@ fn listen(vosk: &Vosk, rec: *mut c_void, cfg: &VoiceConfig, sh: &Arc<VoiceShared
     let mut was_open = false;
 
     while !sh.stop.load(Ordering::Relaxed) {
-        capture.read_from_device_to_deque(&mut queue).map_err(|e| format!("microphone: {e}"))?;
+        capture
+            .read_from_device_to_deque(&mut queue)
+            .map_err(|e| format!("microphone: {e}"))?;
         while queue.len() >= chunk_bytes {
             let samples: Vec<i16> = (0..CHUNK_FRAMES)
                 .map(|_| {
@@ -194,10 +302,17 @@ fn listen(vosk: &Vosk, rec: *mut c_void, cfg: &VoiceConfig, sh: &Arc<VoiceShared
                 })
                 .collect();
             let audio = gate.push(&samples);
-            sh.level_bits.store(gate.level().to_bits(), Ordering::Relaxed);
+            sh.level_bits
+                .store(gate.level().to_bits(), Ordering::Relaxed);
             if let Some(audio) = audio {
                 let accepted = unsafe { (vosk.accept)(rec, audio.as_ptr(), audio.len() as c_int) };
-                let json = unsafe { c_str(if accepted == 1 { (vosk.result)(rec) } else { (vosk.partial)(rec) }) };
+                let json = unsafe {
+                    c_str(if accepted == 1 {
+                        (vosk.result)(rec)
+                    } else {
+                        (vosk.partial)(rec)
+                    })
+                };
                 if let Some(r) = parse_result(&json) {
                     if matcher.matches(&r.text, started.elapsed().as_millis() as u64) {
                         let _ = tx.send(());

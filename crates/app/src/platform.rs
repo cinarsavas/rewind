@@ -3,6 +3,7 @@
 use std::path::Path;
 use std::ptr::{null, null_mut};
 use windows_sys::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
+use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};
 use windows_sys::Win32::System::Diagnostics::Debug::MessageBeep;
 use windows_sys::Win32::System::Registry::*;
 use windows_sys::Win32::System::Threading::CreateMutexW;
@@ -42,27 +43,63 @@ const RUN_VALUE: &str = "Rewind";
 pub fn set_autostart(enabled: bool, exe: &Path) -> Result<(), String> {
     unsafe {
         let mut key: HKEY = null_mut();
-        let rc = RegCreateKeyExW(HKEY_CURRENT_USER, wide(RUN_KEY).as_ptr(), 0, null(), 0, KEY_SET_VALUE, null(), &mut key, null_mut());
+        let rc = RegCreateKeyExW(
+            HKEY_CURRENT_USER,
+            wide(RUN_KEY).as_ptr(),
+            0,
+            null(),
+            0,
+            KEY_SET_VALUE,
+            null(),
+            &mut key,
+            null_mut(),
+        );
         if rc != 0 {
             return Err(format!("couldn't open the Run registry key (error {rc})"));
         }
         let result = if enabled {
             let cmd = wide(&format!("\"{}\" --tray", exe.display()));
-            let rc = RegSetValueExW(key, wide(RUN_VALUE).as_ptr(), 0, REG_SZ, cmd.as_ptr() as *const u8, (cmd.len() * 2) as u32);
-            if rc == 0 { Ok(()) } else { Err(format!("couldn't write the Run entry (error {rc})")) }
+            let rc = RegSetValueExW(
+                key,
+                wide(RUN_VALUE).as_ptr(),
+                0,
+                REG_SZ,
+                cmd.as_ptr() as *const u8,
+                (cmd.len() * 2) as u32,
+            );
+            if rc == 0 {
+                Ok(())
+            } else {
+                Err(format!("couldn't write the Run entry (error {rc})"))
+            }
         } else {
             let rc = RegDeleteValueW(key, wide(RUN_VALUE).as_ptr());
             // ERROR_FILE_NOT_FOUND (2) just means it wasn't set.
-            if rc == 0 || rc == 2 { Ok(()) } else { Err(format!("couldn't remove the Run entry (error {rc})")) }
+            if rc == 0 || rc == 2 {
+                Ok(())
+            } else {
+                Err(format!("couldn't remove the Run entry (error {rc})"))
+            }
         };
         RegCloseKey(key);
         result
     }
 }
 
-/// The default Windows "ding". Works in exclusive-fullscreen games where the overlay can't draw.
-pub fn beep() {
+/// The distinctive two-note chime that tells you a clip was saved. It is embedded in the
+/// executable as a tiny WAV, so it works offline and sounds the same on every PC.
+/// Played asynchronously and from memory, so it never blocks the UI thread.
+pub fn clip_saved_sound() {
+    static WAV: &[u8] = include_bytes!("../assets/clip-sound.wav");
     unsafe {
-        MessageBeep(MB_OK);
+        let ok = PlaySoundW(
+            WAV.as_ptr() as *const u16,
+            null_mut(),
+            SND_MEMORY | SND_ASYNC | SND_NODEFAULT,
+        );
+        if ok == 0 {
+            // No audio endpoint (or the WAV was rejected): fall back to the system ding.
+            MessageBeep(MB_OK);
+        }
     }
 }

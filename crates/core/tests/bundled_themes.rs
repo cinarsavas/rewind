@@ -19,14 +19,29 @@ fn every_bundled_theme_is_valid() {
             continue;
         }
         let id = path.file_stem().unwrap().to_string_lossy().into_owned();
-        assert!(valid_id(&id), "theme file name '{id}' must be lower-case letters, digits and dashes");
+        assert!(
+            valid_id(&id),
+            "theme file name '{id}' must be lower-case letters, digits and dashes"
+        );
         let text = fs::read_to_string(&path).unwrap();
         let theme = ThemeFile::from_toml(&text).unwrap_or_else(|e| panic!("{id}: {e}"));
         let p = theme.to_palette().unwrap_or_else(|e| panic!("{id}: {e}"));
-        assert!(contrast(p.text, p.panel) >= 4.5, "{id}: text on the panel background is too faint");
-        assert!(contrast(p.accent, p.card) >= 3.0, "{id}: accent is too faint on cards");
-        assert!(contrast(p.on_accent, p.accent) >= 4.5, "{id}: text on accent buttons is too faint");
-        assert!(contrast(p.danger, p.card) >= 3.0, "{id}: danger colour is too faint");
+        assert!(
+            contrast(p.text, p.panel) >= 4.5,
+            "{id}: text on the panel background is too faint"
+        );
+        assert!(
+            contrast(p.accent, p.card) >= 3.0,
+            "{id}: accent is too faint on cards"
+        );
+        assert!(
+            contrast(p.on_accent, p.accent) >= 4.5,
+            "{id}: text on accent buttons is too faint"
+        );
+        assert!(
+            contrast(p.danger, p.card) >= 3.0,
+            "{id}: danger colour is too faint"
+        );
         count += 1;
     }
     assert!(count >= 3, "expected the bundled themes to be present");
@@ -38,7 +53,15 @@ fn theme_template_is_valid() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/theme-template.toml");
     let text = fs::read_to_string(&path).expect("docs/theme-template.toml exists");
     let theme = ThemeFile::from_toml(&text).expect("the template parses");
-    let p = theme.to_palette().expect("the template passes the contrast rules");
-    assert!(contrast(p.text, p.card) >= 4.5, "template text on cards is too faint");
-    assert!(contrast(p.accent, p.card) >= 2.5, "template accent is too faint on cards");
+    let p = theme
+        .to_palette()
+        .expect("the template passes the contrast rules");
+    assert!(
+        contrast(p.text, p.card) >= 4.5,
+        "template text on cards is too faint"
+    );
+    assert!(
+        contrast(p.accent, p.card) >= 2.5,
+        "template accent is too faint on cards"
+    );
 }

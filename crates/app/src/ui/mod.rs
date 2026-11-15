@@ -1,4 +1,5 @@
 mod effects;
+mod i18n;
 mod theme;
 mod views;
 mod widgets;
@@ -9,7 +10,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use eframe::egui;
 use rewind_core::config::{Config, EffectStyle, Preset, VoiceConfig};
-use rewind_core::library::{self, human_age, human_size, Clip};
+use rewind_core::library::{self, human_size, Clip};
 use rewind_core::toast::{ToastKind, ToastSpec};
 use rewind_core::trim::{self, TrimJob};
 
@@ -22,7 +23,7 @@ use crate::platform;
 use crate::runtime;
 use crate::thumbs::Thumbs;
 use crate::tray::{Tray, TrayAction};
-use crate::voice::{self, VoiceHandle};
+use crate::voice::{self, VoiceHandle, VoiceStatus};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Page {
@@ -58,6 +59,17 @@ pub enum Msg {
     Saved(Result<PathBuf, String>),
     Trimmed(Result<PathBuf, String>),
     Scanned(Vec<Clip>),
+    Update(Result<Option<crate::updates::UpdateInfo>, String>),
+}
+
+/// What the About page knows about newer releases.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UpdateState {
+    Idle,
+    Checking,
+    UpToDate,
+    Available(crate::updates::UpdateInfo),
+    Failed(String),
 }
 
 /// How long an in-app toast stays up, including its fade-out.
@@ -90,8 +102,16 @@ pub struct ClipRow {
 }
 
 fn clip_meta(now: SystemTime, clip: &Clip) -> String {
-    let group = if clip.group.is_empty() { String::new() } else { format!("{} · ", clip.group) };
-    format!("{group}{} · {}", human_size(clip.size_bytes), human_age(now, clip.modified))
+    let group = if clip.group.is_empty() {
+        String::new()
+    } else {
+        format!("{} · ", clip.group)
+    };
+    format!(
+        "{group}{} · {}",
+        human_size(clip.size_bytes),
+        i18n::age(now, clip.modified)
+    )
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -158,6 +178,8 @@ pub struct RewindApp {
     pub packs: PackManager,
     voice: Option<VoiceHandle>,
     voice_running_cfg: Option<VoiceConfig>,
+    /// When an errored listener should be tried again.
+    voice_retry_at: Option<Instant>,
     pub voice_error: Option<String>,
     page_changed: Instant,
     page_dir: f32,
@@ -173,18 +195,26 @@ pub struct RewindApp {
     /// Live celebrations (toggle effects), painted above the UI.
     fx: Vec<effects::FxEvent>,
     fx_seed: u32,
+    /// Audio endpoints for the settings dropdowns; refreshed on demand.
+    pub output_devices: Vec<crate::audio::AudioDevice>,
+    pub input_devices: Vec<crate::audio::AudioDevice>,
+    pub update_state: UpdateState,
+    update_auto_checked: bool,
 }
 
 impl RewindApp {
     pub fn new(cc: &eframe::CreationContext<'_>, start_hidden: bool) -> Self {
-        let cfg_path = Config::default_path().unwrap_or_else(|| PathBuf::from("rewind-config.toml"));
+        let cfg_path =
+            Config::default_path().unwrap_or_else(|| PathBuf::from("rewind-config.toml"));
         let first_run = !cfg_path.exists();
         let mut cfg = Config::load_from(&cfg_path);
         if first_run {
             // No config yet: pick a light preset for clearly older machines instead of
             // starting at 1080p60 and letting the first recording stutter. The friend's
             // Arrandale i5 reports 4 logical cores, so it lands on Low-end.
-            let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+            let cores = std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4);
             if cores <= 4 {
                 cfg.apply_preset(Preset::LowEnd);
             }
@@ -192,9 +222,15 @@ impl RewindApp {
             let _ = cfg.save_to(&cfg_path);
         }
         let packs = PackManager::new(directories_dir().join("packs"), cc.egui_ctx.clone());
+        i18n::set_lang(cfg.language);
         theme::install_fonts(&cc.egui_ctx);
         theme::set_animations(&cc.egui_ctx, cfg.animations);
         theme::set_palette(&packs.palette_for(&cfg.theme));
+        theme::set_layout(theme::resolve_layout(
+            &packs.layout_for(&cfg.theme),
+            packs.background_for(&cfg.theme).as_deref(),
+            &cc.egui_ctx,
+        ));
         theme::apply_visuals(&cc.egui_ctx);
         let (tx, rx) = channel();
         // One long-lived worker scans the clips folder off the UI thread on request.
@@ -226,13 +262,18 @@ impl RewindApp {
             });
             Phase::Installing
         };
-        let app_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf()));
+        let app_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()));
         let hotkeys = Hotkeys::new(cc.egui_ctx.clone()).ok();
-        let tray = Tray::new(cc.egui_ctx.clone(), cfg.start_buffer_on_launch).map_err(|e| log::warn!("{e}")).ok();
+        let tray = Tray::new(cc.egui_ctx.clone(), cfg.start_buffer_on_launch)
+            .map_err(|e| log::warn!("{e}"))
+            .ok();
         let hide_now = (start_hidden || cfg.start_minimized) && tray.is_some();
         let cfg_theme = cfg.theme.clone();
         if hide_now {
-            cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            cc.egui_ctx
+                .send_viewport_cmd(egui::ViewportCommand::Visible(false));
         }
         Self {
             draft: cfg.clone(),
@@ -281,6 +322,7 @@ impl RewindApp {
             packs,
             voice: None,
             voice_running_cfg: None,
+            voice_retry_at: None,
             voice_error: None,
             page_changed: Instant::now(),
             page_dir: 1.0,
@@ -291,13 +333,61 @@ impl RewindApp {
             list_shown: Instant::now(),
             fx: Vec::new(),
             fx_seed: 0x9E37_79B9,
+            output_devices: crate::audio::output_devices(),
+            input_devices: crate::audio::input_devices(),
+            update_state: UpdateState::Idle,
+            update_auto_checked: false,
         }
+    }
+
+    /// Re-read the Windows audio endpoints. Cheap enough to call from a button.
+    pub fn refresh_audio_devices(&mut self) {
+        self.output_devices = crate::audio::output_devices();
+        self.input_devices = crate::audio::input_devices();
+    }
+
+    /// Switch to the theme in the draft: colours cross-fade, layout and background swap at
+    /// once. Called when the theme picker changes, so previews are immediate.
+    pub fn apply_theme(&mut self, ctx: &egui::Context) {
+        let palette = self.packs.palette_for(&self.draft.theme);
+        let layout = theme::resolve_layout(
+            &self.packs.layout_for(&self.draft.theme),
+            self.packs.background_for(&self.draft.theme).as_deref(),
+            ctx,
+        );
+        theme::fade_to(ctx, &palette);
+        theme::set_layout(layout);
+        theme::apply_visuals(ctx);
+        self.applied_theme = self.draft.theme.clone();
+    }
+
+    /// Start a GitHub release check in the background.
+    pub fn check_updates(&mut self) {
+        if matches!(self.update_state, UpdateState::Checking) {
+            return;
+        }
+        self.update_state = UpdateState::Checking;
+        let tx = self.tx.clone();
+        let ctx = self.ctx.clone();
+        let repo = crate::packs::repo();
+        std::thread::Builder::new()
+            .name("rewind-update".into())
+            .spawn(move || {
+                let result = crate::updates::check(&repo);
+                let _ = tx.send(Msg::Update(result));
+                ctx.request_repaint();
+            })
+            .ok();
     }
 
     /// Switch page, restarting the page-enter transition.
     pub fn set_page(&mut self, page: Page) {
         if self.page != page {
-            self.page_dir = if page.rank() >= self.page.rank() { 1.0 } else { -1.0 };
+            self.page_dir = if page.rank() >= self.page.rank() {
+                1.0
+            } else {
+                -1.0
+            };
             self.page = page;
             self.page_changed = Instant::now();
             // Start each page at the top, without the old scroll position leaking across.
@@ -337,7 +427,11 @@ impl RewindApp {
 
     /// 0..=1 reveal progress for clip row `index`, staggered down the list.
     pub fn row_reveal(&self, index: usize) -> f32 {
-        row_reveal_at(self.list_shown, index, theme::animations_on() && !self.cfg.low_power_ui)
+        row_reveal_at(
+            self.list_shown,
+            index,
+            theme::animations_on() && !self.cfg.low_power_ui,
+        )
     }
 
     /// Which way the current page transition slides: 1 = entered from the right.
@@ -355,13 +449,27 @@ impl RewindApp {
 
     /// Move celebrations queued during the last frame into the live list. Ignored entirely
     /// while animations are off or the low-power UI is on, so slow PCs never pay for them.
-    fn absorb_fx(&mut self) {
-        let enabled = theme::animations_on() && !self.draft.low_power_ui;
-        for (style, at) in effects::take_queued() {
-            if !enabled || style == EffectStyle::None || self.fx.len() >= 6 {
+    fn absorb_fx(&mut self, ctx: &egui::Context) {
+        let enabled = self.draft.animations && !self.draft.low_power_ui;
+        let queued = effects::take_queued();
+        if !enabled {
+            // Settings turned effects off mid-flight: stop painting them immediately.
+            self.fx.clear();
+            return;
+        }
+        for (style, at) in queued {
+            if style == EffectStyle::None {
                 continue;
             }
-            self.fx_seed = self.fx_seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            // Keep the celebration fully visible even for a switch near the window edge.
+            let at = effects::clamp_to_screen(ctx, at);
+            if self.fx.len() >= 8 {
+                self.fx.remove(0);
+            }
+            self.fx_seed = self
+                .fx_seed
+                .wrapping_mul(1_664_525)
+                .wrapping_add(1_013_904_223);
             self.fx.push(effects::FxEvent::new(style, at, self.fx_seed));
         }
         self.fx.retain(|e| !e.expired());
@@ -370,7 +478,10 @@ impl RewindApp {
     /// Refresh the cached clip rows (and their display strings) when the library or the
     /// relative-age bucket changed. Cheap to call every frame; does nothing most of the time.
     pub fn sync_clip_rows(&mut self) {
-        let bucket = now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() / 5).unwrap_or(0);
+        let bucket = now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() / 5)
+            .unwrap_or(0);
         if self.clip_rows_rev == self.clips_rev && self.clip_rows_bucket == bucket {
             return;
         }
@@ -381,7 +492,14 @@ impl RewindApp {
                 row.meta = clip_meta(now, clip);
             }
         } else {
-            self.clip_rows = self.clips.iter().map(|c| ClipRow { meta: clip_meta(now, c), clip: c.clone() }).collect();
+            self.clip_rows = self
+                .clips
+                .iter()
+                .map(|c| ClipRow {
+                    meta: clip_meta(now, c),
+                    clip: c.clone(),
+                })
+                .collect();
             self.filter_dirty = true;
         }
         self.clip_rows_rev = self.clips_rev;
@@ -423,16 +541,44 @@ impl RewindApp {
         if !want {
             self.voice = None;
             self.voice_running_cfg = None;
+            self.voice_retry_at = None;
             return;
+        }
+        // A listener that stopped with an error (mic unplugged, device busy) is retried after
+        // a short pause instead of staying dead until the next Apply.
+        let errored = self
+            .voice
+            .as_ref()
+            .map(|v| matches!(v.shared.status(), VoiceStatus::Error(_)))
+            .unwrap_or(false);
+        if errored {
+            self.voice = None;
+            self.voice_running_cfg = None;
+            let retry_at = *self
+                .voice_retry_at
+                .get_or_insert_with(|| Instant::now() + std::time::Duration::from_secs(5));
+            if Instant::now() < retry_at {
+                self.ctx
+                    .request_repaint_after(std::time::Duration::from_millis(500));
+                return;
+            }
+            self.voice_retry_at = None;
         }
         if self.voice.is_some() && self.voice_running_cfg.as_ref() == Some(&self.cfg.voice) {
             return;
         }
         self.voice = None;
         self.voice_error = None;
-        let handle = voice::start(&self.cfg.voice, self.packs.voice_runtime_dir(), self.packs.voice_model_dir(&self.cfg.voice.language), self.ctx.clone());
+        let handle = voice::start(
+            &self.cfg.voice,
+            self.packs.voice_runtime_dir(),
+            self.packs.voice_model_dir(&self.cfg.voice.language),
+            self.cfg.audio.mic_device.clone(),
+            self.ctx.clone(),
+        );
         self.voice = Some(handle);
         self.voice_running_cfg = Some(self.cfg.voice.clone());
+        self.voice_retry_at = None;
     }
 
     pub fn voice_handle(&self) -> Option<&VoiceHandle> {
@@ -441,21 +587,39 @@ impl RewindApp {
 
     /// In-app toast only.
     pub fn notify(&mut self, text: impl Into<String>, is_error: bool) {
-        self.toast = Some(Toast { text: text.into(), is_error, at: Instant::now() });
+        let text = i18n::t(&text.into()).to_string();
+        self.toast = Some(Toast {
+            text,
+            is_error,
+            at: Instant::now(),
+        });
     }
 
     /// In-app toast plus the over-the-game overlay (skipped while Rewind itself is focused).
     pub fn announce(&mut self, kind: ToastKind, title: &str, subtitle: &str) {
-        self.notify(if subtitle.is_empty() { title.to_string() } else { format!("{title} — {subtitle}") }, kind == ToastKind::Error);
+        let (title, subtitle) = (i18n::t(title), i18n::t(subtitle));
+        self.notify(
+            if subtitle.is_empty() {
+                title.to_string()
+            } else {
+                format!("{title} — {subtitle}")
+            },
+            kind == ToastKind::Error,
+        );
         self.show_overlay(kind, title, subtitle, false);
     }
 
     pub fn show_overlay(&self, kind: ToastKind, title: &str, subtitle: &str, force: bool) {
         if self.cfg.overlay_enabled && (force || !self.focused) {
             self.overlay.show(
-                ToastSpec { kind, title: title.to_string(), subtitle: subtitle.to_string() },
+                ToastSpec {
+                    kind,
+                    title: i18n::t(title).to_string(),
+                    subtitle: i18n::t(subtitle).to_string(),
+                },
                 self.cfg.overlay_corner,
                 self.cfg.overlay_secs,
+                theme::toast_colors(),
             );
         }
     }
@@ -463,9 +627,14 @@ impl RewindApp {
     pub fn preview_overlay(&self) {
         // Use the draft values so the user sees what they're about to apply.
         self.overlay.show(
-            ToastSpec { kind: ToastKind::Success, title: "Replay saved".into(), subtitle: "This is how notifications look".into() },
+            ToastSpec {
+                kind: ToastKind::Success,
+                title: i18n::t("Replay saved").to_string(),
+                subtitle: i18n::t("This is how notifications look").to_string(),
+            },
             self.draft.overlay_corner,
             self.draft.overlay_secs,
+            theme::toast_colors(),
         );
     }
 
@@ -503,7 +672,10 @@ impl RewindApp {
     }
 
     pub fn buffer_active(&self) -> bool {
-        self.engine.as_ref().map(|e| e.is_buffer_active()).unwrap_or(false)
+        self.engine
+            .as_ref()
+            .map(|e| e.is_buffer_active())
+            .unwrap_or(false)
     }
 
     pub fn set_buffer(&mut self, on: bool) {
@@ -512,7 +684,13 @@ impl RewindApp {
             Ok(()) => {
                 self.buffer_started_at = if on { Some(Instant::now()) } else { None };
                 let (title, sub) = if on {
-                    ("Instant Replay on", format!("Keeping the last {} s", self.cfg.buffer_secs))
+                    (
+                        "Instant Replay on",
+                        i18n::tf(
+                            "Keeping the last {secs} s",
+                            &[("secs", &self.cfg.buffer_secs.to_string())],
+                        ),
+                    )
                 } else {
                     ("Instant Replay off", String::new())
                 };
@@ -526,7 +704,9 @@ impl RewindApp {
         if self.saving {
             return;
         }
-        let Some(saver) = self.engine.as_ref().and_then(|e| e.saver()) else { return };
+        let Some(saver) = self.engine.as_ref().and_then(|e| e.saver()) else {
+            return;
+        };
         self.saving = true;
         let tx = self.tx.clone();
         let ctx = ctx.clone();
@@ -549,7 +729,10 @@ impl RewindApp {
                     // Roll back to the last known-good settings so the buffer keeps working.
                     let _ = engine.apply(&self.cfg, was_running);
                     self.draft = self.cfg.clone();
-                    self.notify(format!("Couldn't apply settings: {e}"), true);
+                    self.notify(
+                        i18n::tf("Couldn't apply settings: {e}", &[("e", &e.to_string())]),
+                        true,
+                    );
                     return;
                 }
             } else {
@@ -563,15 +746,28 @@ impl RewindApp {
             let exe = std::env::current_exe().unwrap_or_default();
             if let Err(e) = platform::set_autostart(next.launch_at_login, &exe) {
                 next.launch_at_login = self.cfg.launch_at_login;
-                note = Some(format!("Start with Windows: {e}"));
+                note = Some(i18n::tf(
+                    "Start with Windows: {e}",
+                    &[("e", &e.to_string())],
+                ));
             }
         }
         self.cfg = next;
+        i18n::set_lang(self.cfg.language);
         self.draft = self.cfg.clone();
         if let Err(e) = self.cfg.save_to(&self.cfg_path) {
-            self.notify(format!("Settings applied but couldn't be saved: {e}"), true);
+            self.notify(
+                i18n::tf(
+                    "Settings applied but couldn't be saved: {e}",
+                    &[("e", &e.to_string())],
+                ),
+                true,
+            );
         } else {
-            self.notify(note.unwrap_or_else(|| "Settings applied".into()), false);
+            self.notify(
+                note.unwrap_or_else(|| i18n::t("Settings applied").to_string()),
+                false,
+            );
         }
         self.register_hotkeys();
         self.sync_voice();
@@ -581,7 +777,10 @@ impl RewindApp {
     /// Ask the scan worker for a fresh clip list. Never blocks the UI thread; the results
     /// arrive through [`Msg::Scanned`] a frame or two later.
     pub fn refresh_clips(&mut self, force: bool) {
-        let stale = self.clips_scanned.map(|t| t.elapsed() > Duration::from_secs(5)).unwrap_or(true);
+        let stale = self
+            .clips_scanned
+            .map(|t| t.elapsed() > Duration::from_secs(5))
+            .unwrap_or(true);
         if !force && !stale {
             return;
         }
@@ -592,7 +791,12 @@ impl RewindApp {
             return;
         }
         let dir = self.cfg.output_dir.clone();
-        if self.scan_tx.as_ref().map(|tx| tx.send(dir.clone()).is_ok()).unwrap_or(false) {
+        if self
+            .scan_tx
+            .as_ref()
+            .map(|tx| tx.send(dir.clone()).is_ok())
+            .unwrap_or(false)
+        {
             self.scan_inflight = true;
             self.clips_scanned = Some(Instant::now());
         } else {
@@ -620,7 +824,9 @@ impl RewindApp {
     }
 
     pub fn run_trim(&mut self, ctx: &egui::Context) {
-        let (Some(ts), Some(ffmpeg)) = (&mut self.trim, self.ffmpeg.clone()) else { return };
+        let (Some(ts), Some(ffmpeg)) = (&mut self.trim, self.ffmpeg.clone()) else {
+            return;
+        };
         let job = TrimJob {
             input: ts.clip.path.clone(),
             output: trim::default_output(&ts.clip.path),
@@ -647,7 +853,11 @@ impl RewindApp {
             }
             let res = match cmd.output() {
                 Ok(o) if o.status.success() => Ok(job.output.clone()),
-                Ok(o) => Err(String::from_utf8_lossy(&o.stderr).lines().last().unwrap_or("ffmpeg failed").to_string()),
+                Ok(o) => Err(String::from_utf8_lossy(&o.stderr)
+                    .lines()
+                    .last()
+                    .unwrap_or("ffmpeg failed")
+                    .to_string()),
                 Err(e) => Err(format!("couldn't run ffmpeg: {e}")),
             };
             let _ = tx.send(Msg::Trimmed(res));
@@ -662,10 +872,13 @@ impl RewindApp {
                 Msg::Installed(Err(e)) => self.phase = Phase::Failed(e),
                 Msg::Saved(Ok(path)) => {
                     self.saving = false;
-                    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    let name = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
                     self.last_saved = Some(path);
                     if self.cfg.sound_on_save {
-                        platform::beep();
+                        platform::clip_saved_sound();
                     }
                     self.announce(ToastKind::Success, "Replay saved", &name);
                     self.refresh_clips(true);
@@ -676,17 +889,28 @@ impl RewindApp {
                 }
                 Msg::Trimmed(Ok(path)) => {
                     self.trim = None;
-                    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                    self.notify(format!("Trimmed copy saved: {name}"), false);
+                    let name = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    self.notify(
+                        i18n::tf("Trimmed copy saved: {name}", &[("name", &name)]),
+                        false,
+                    );
                     self.refresh_clips(true);
                 }
                 Msg::Trimmed(Err(e)) => {
                     if let Some(t) = &mut self.trim {
                         t.running = false;
                     }
-                    self.notify(format!("Trim failed: {e}"), true);
+                    self.notify(i18n::tf("Trim failed: {e}", &[("e", &e.to_string())]), true);
                 }
                 Msg::Scanned(clips) => self.accept_scan(clips),
+                Msg::Update(Ok(Some(info))) => {
+                    self.update_state = UpdateState::Available(info);
+                }
+                Msg::Update(Ok(None)) => self.update_state = UpdateState::UpToDate,
+                Msg::Update(Err(e)) => self.update_state = UpdateState::Failed(e),
             }
         }
     }
@@ -712,7 +936,9 @@ impl RewindApp {
         for a in actions {
             match a {
                 TrayAction::Show => self.show_window(ctx),
-                TrayAction::SaveReplay if matches!(self.phase, Phase::Ready) => self.save_replay(ctx),
+                TrayAction::SaveReplay if matches!(self.phase, Phase::Ready) => {
+                    self.save_replay(ctx)
+                }
                 TrayAction::ToggleBuffer if matches!(self.phase, Phase::Ready) => {
                     let on = !self.buffer_active();
                     self.set_buffer(on);
@@ -747,7 +973,12 @@ impl RewindApp {
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
         if !self.tray_hint_shown {
             self.tray_hint_shown = true;
-            self.show_overlay(ToastKind::Info, "Rewind is still running", "Find it in the system tray", true);
+            self.show_overlay(
+                ToastKind::Info,
+                "Rewind is still running",
+                "Find it in the system tray",
+                true,
+            );
         }
     }
 }
@@ -764,6 +995,8 @@ fn directories_dir() -> PathBuf {
 
 impl eframe::App for RewindApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // The language follows the applied config, so a change only takes effect on Apply.
+        i18n::set_lang(self.cfg.language);
         self.drain_messages();
         self.handle_hotkeys(ctx);
         self.handle_tray(ctx);
@@ -771,18 +1004,26 @@ impl eframe::App for RewindApp {
         for ev in self.packs.poll() {
             match ev {
                 PackEvent::Installed(key) => {
-                    self.notify(format!("Installed {key}"), false);
+                    self.notify(i18n::tf("Installed {key}", &[("key", &key)]), false);
                     self.sync_voice();
                 }
-                PackEvent::Failed(key, e) => self.notify(format!("Couldn't install {key}: {e}"), true),
+                PackEvent::Failed(key, e) => self.notify(
+                    i18n::tf("Couldn't install {key}: {e}", &[("key", &key), ("e", &e)]),
+                    true,
+                ),
             }
+        }
+        // Keeps a crashed/errored listener on its retry schedule.
+        self.sync_voice();
+        // One quiet update check per launch, only once the engine is up.
+        if self.cfg.check_updates && !self.update_auto_checked && matches!(self.phase, Phase::Ready)
+        {
+            self.update_auto_checked = true;
+            self.check_updates();
         }
         // Live theme / animation preview while editing settings.
         if self.applied_theme != self.draft.theme {
-            let palette = self.packs.palette_for(&self.draft.theme);
-            theme::fade_to(ctx, &palette);
-            theme::apply_visuals(ctx);
-            self.applied_theme = self.draft.theme.clone();
+            self.apply_theme(ctx);
         }
         if theme::animations_on() != self.draft.animations {
             theme::set_animations(ctx, self.draft.animations);
@@ -790,7 +1031,9 @@ impl eframe::App for RewindApp {
         if theme::tick_tween() {
             theme::apply_visuals(ctx);
         }
-        if self.voice.as_ref().map(|v| v.poll()).unwrap_or(false) && matches!(self.phase, Phase::Ready) {
+        if self.voice.as_ref().map(|v| v.poll()).unwrap_or(false)
+            && matches!(self.phase, Phase::Ready)
+        {
             self.save_replay(ctx);
         }
 
@@ -838,7 +1081,11 @@ impl eframe::App for RewindApp {
             // A toast at full opacity is idle, but we must wake up exactly when its fade-out
             // starts or the window would sleep straight through it.
             if self.toast.is_some() && !animating {
-                let hold = self.toast.as_ref().map(|t| (TOAST_TOTAL - 0.35 - t.at.elapsed().as_secs_f32()).max(0.0)).unwrap_or(0.0);
+                let hold = self
+                    .toast
+                    .as_ref()
+                    .map(|t| (TOAST_TOTAL - 0.35 - t.at.elapsed().as_secs_f32()).max(0.0))
+                    .unwrap_or(0.0);
                 ms = ms.min((hold * 1000.0) as u64).max(16);
             }
             next = Some(Duration::from_millis(ms));
@@ -851,20 +1098,24 @@ impl eframe::App for RewindApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
-        if ctx.input(|i| i.viewport().close_requested()) && self.cfg.close_to_tray && !self.quitting && self.tray.is_some() {
+        if ctx.input(|i| i.viewport().close_requested())
+            && self.cfg.close_to_tray
+            && !self.quitting
+            && self.tray.is_some()
+        {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.hide_to_tray(&ctx);
         }
-        effects::set_style(if theme::animations_on() && !self.draft.low_power_ui {
+        effects::set_style(if self.draft.animations && !self.draft.low_power_ui {
             self.draft.effects
         } else {
             EffectStyle::None
         });
-        self.absorb_fx();
+        self.absorb_fx(&ctx);
         views::draw(self, ui);
         // Pick up anything queued by clicks during this frame so the celebration appears
         // immediately rather than one frame later.
-        self.absorb_fx();
+        self.absorb_fx(&ctx);
         effects::draw(&ctx, &self.fx);
     }
 }

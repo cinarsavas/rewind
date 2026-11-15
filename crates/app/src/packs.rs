@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use eframe::egui;
 use rewind_core::packs::{index_url, PackIndex, ThemePack, VoicePack};
-use rewind_core::theme::{Palette, ThemeFile};
+use rewind_core::theme::{Palette, ThemeFile, ThemeLayout};
 
 use crate::download::{download_verified, fetch_text, unzip, Progress};
 
@@ -21,7 +21,11 @@ pub fn repo() -> String {
     std::env::var("REWIND_REPO")
         .ok()
         .and_then(usable)
-        .or_else(|| option_env!("REWIND_REPO").map(str::to_owned).and_then(usable))
+        .or_else(|| {
+            option_env!("REWIND_REPO")
+                .map(str::to_owned)
+                .and_then(usable)
+        })
         .unwrap_or_else(|| "cinarsavas/rewind".to_string())
 }
 
@@ -41,11 +45,18 @@ pub struct InstalledTheme {
     pub name: String,
     pub author: String,
     pub palette: Palette,
+    /// Layout and background overrides from the theme file.
+    pub layout: ThemeLayout,
+    /// Absolute path of the background image, if the theme ships one next to its TOML.
+    pub background_path: Option<PathBuf>,
 }
 
 enum Msg {
     Index(Result<PackIndex, String>),
-    Done { key: String, result: Result<(), String> },
+    Done {
+        key: String,
+        result: Result<(), String>,
+    },
 }
 
 pub enum PackEvent {
@@ -67,7 +78,16 @@ pub struct PackManager {
 impl PackManager {
     pub fn new(root: PathBuf, ctx: egui::Context) -> Self {
         let (tx, rx) = channel();
-        let mut m = Self { root, ctx, index: None, index_state: IndexState::Idle, jobs: HashMap::new(), themes: Vec::new(), tx, rx };
+        let mut m = Self {
+            root,
+            ctx,
+            index: None,
+            index_state: IndexState::Idle,
+            jobs: HashMap::new(),
+            themes: Vec::new(),
+            tx,
+            rx,
+        };
         m.scan_themes();
         m
     }
@@ -107,7 +127,11 @@ impl PackManager {
         });
     }
 
-    fn spawn_job(&mut self, key: &str, job: impl FnOnce(Arc<Progress>) -> Result<(), String> + Send + 'static) {
+    fn spawn_job(
+        &mut self,
+        key: &str,
+        job: impl FnOnce(Arc<Progress>) -> Result<(), String> + Send + 'static,
+    ) {
         if self.jobs.contains_key(key) {
             return;
         }
@@ -122,16 +146,36 @@ impl PackManager {
     }
 
     pub fn install_runtime(&mut self) {
-        let Some(file) = self.index.as_ref().and_then(|i| i.voice_runtime.clone()) else { return };
+        let Some(file) = self.index.as_ref().and_then(|i| i.voice_runtime.clone()) else {
+            return;
+        };
         let (root, dest) = (self.root.clone(), self.voice_runtime_dir());
-        self.spawn_job(KEY_RUNTIME, move |p| install_zip(&root, "voice-runtime.zip", &file.url, &file.sha256, &dest, &p, |d| d.join("libvosk.dll").is_file()));
+        self.spawn_job(KEY_RUNTIME, move |p| {
+            install_zip(
+                &root,
+                "voice-runtime.zip",
+                &file.url,
+                &file.sha256,
+                &dest,
+                &p,
+                |d| d.join("libvosk.dll").is_file(),
+            )
+        });
     }
 
     pub fn install_voice(&mut self, pack: &VoicePack) {
-        let (root, dest, file) = (self.root.clone(), self.voice_model_dir(&pack.id), pack.file.clone());
+        let (root, dest, file) = (
+            self.root.clone(),
+            self.voice_model_dir(&pack.id),
+            pack.file.clone(),
+        );
         let key = format!("voice-{}", pack.id);
         let zip_name = format!("{key}.zip");
-        self.spawn_job(&key, move |p| install_zip(&root, &zip_name, &file.url, &file.sha256, &dest, &p, |d| d.join("am").is_dir() || d.join("conf").is_dir()));
+        self.spawn_job(&key, move |p| {
+            install_zip(&root, &zip_name, &file.url, &file.sha256, &dest, &p, |d| {
+                d.join("am").is_dir() || d.join("conf").is_dir()
+            })
+        });
     }
 
     pub fn install_theme(&mut self, pack: &ThemePack) {
@@ -164,27 +208,76 @@ impl PackManager {
 
     pub fn scan_themes(&mut self) {
         self.themes.clear();
-        let Ok(rd) = fs::read_dir(self.themes_dir()) else { return };
+        let Ok(rd) = fs::read_dir(self.themes_dir()) else {
+            return;
+        };
         for entry in rd.flatten() {
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) != Some("toml") {
                 continue;
             }
-            let Some(id) = path.file_stem().map(|s| s.to_string_lossy().into_owned()) else { continue };
+            let Some(id) = path.file_stem().map(|s| s.to_string_lossy().into_owned()) else {
+                continue;
+            };
             if !rewind_core::packs::valid_id(&id) {
                 continue;
             }
-            let Ok(text) = fs::read_to_string(&path) else { continue };
-            let Ok(file) = ThemeFile::from_toml(&text) else { continue };
-            let Ok(palette) = file.to_palette() else { continue };
-            self.themes.push(InstalledTheme { id, name: file.name, author: file.author, palette });
+            let Ok(text) = fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(file) = ThemeFile::from_toml(&text) else {
+                continue;
+            };
+            let Ok(palette) = file.to_palette() else {
+                continue;
+            };
+            // A background image is resolved relative to the theme file. It is optional, and
+            // a missing file simply leaves the theme without one.
+            let background_path = {
+                let rel = file.layout.background.trim();
+                if rel.is_empty() {
+                    None
+                } else {
+                    let p = path.parent().unwrap_or(Path::new(".")).join(rel);
+                    p.is_file().then_some(p)
+                }
+            };
+            self.themes.push(InstalledTheme {
+                id,
+                name: file.name,
+                author: file.author,
+                palette,
+                layout: file.layout,
+                background_path,
+            });
         }
         self.themes.sort_by_key(|t| t.name.to_lowercase());
     }
 
     /// Palette for a theme id; falls back to the built-in default if it's gone or broken.
     pub fn palette_for(&self, id: &str) -> Palette {
-        self.themes.iter().find(|t| t.id == id).map(|t| t.palette).unwrap_or_else(Palette::default_dark)
+        self.themes
+            .iter()
+            .find(|t| t.id == id)
+            .map(|t| t.palette)
+            .unwrap_or_else(Palette::default_dark)
+    }
+
+    /// Layout overrides for a theme id, or the built-in layout.
+    pub fn layout_for(&self, id: &str) -> ThemeLayout {
+        self.themes
+            .iter()
+            .find(|t| t.id == id)
+            .map(|t| t.layout.clone())
+            .unwrap_or_default()
+    }
+
+    /// Background image shipped with a theme, if any.
+    pub fn background_for(&self, id: &str) -> Option<PathBuf> {
+        self.themes
+            .iter()
+            .find(|t| t.id == id)
+            .and_then(|t| t.background_path.clone())
     }
 
     pub fn poll(&mut self) -> Vec<PackEvent> {
@@ -215,12 +308,26 @@ impl PackManager {
 }
 
 /// Download a zip, verify it, unpack it beside the final folder and swap it in.
-fn install_zip(root: &Path, zip_name: &str, url: &str, sha256: &str, dest: &Path, progress: &Arc<Progress>, valid: impl Fn(&Path) -> bool) -> Result<(), String> {
+fn install_zip(
+    root: &Path,
+    zip_name: &str,
+    url: &str,
+    sha256: &str,
+    dest: &Path,
+    progress: &Arc<Progress>,
+    valid: impl Fn(&Path) -> bool,
+) -> Result<(), String> {
     let zip_path = root.join(".downloads").join(zip_name);
     download_verified(url, &zip_path, sha256, progress)?;
     let staging = dest.with_extension("new");
     let _ = fs::remove_dir_all(&staging);
-    let result = unzip(&zip_path, &staging).and_then(|_| if valid(&staging) { Ok(()) } else { Err("the download doesn't contain the expected files".to_string()) });
+    let result = unzip(&zip_path, &staging).and_then(|_| {
+        if valid(&staging) {
+            Ok(())
+        } else {
+            Err("the download doesn't contain the expected files".to_string())
+        }
+    });
     let _ = fs::remove_file(&zip_path);
     if let Err(e) = result {
         let _ = fs::remove_dir_all(&staging);

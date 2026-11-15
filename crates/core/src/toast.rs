@@ -75,13 +75,24 @@ pub fn rounded_rect_coverage(px: f32, py: f32, w: f32, h: f32, r: f32) -> f32 {
 mod tests {
     use super::*;
 
-    const MON: Rect = Rect { x: 100, y: 50, w: 1920, h: 1080 };
+    const MON: Rect = Rect {
+        x: 100,
+        y: 50,
+        w: 1920,
+        h: 1080,
+    };
 
     #[test]
     fn places_in_each_corner_with_margin() {
         assert_eq!(place(Corner::TopLeft, MON, 300, 80, 20), (120, 70));
-        assert_eq!(place(Corner::TopRight, MON, 300, 80, 20), (100 + 1920 - 300 - 20, 70));
-        assert_eq!(place(Corner::BottomLeft, MON, 300, 80, 20), (120, 50 + 1080 - 80 - 20));
+        assert_eq!(
+            place(Corner::TopRight, MON, 300, 80, 20),
+            (100 + 1920 - 300 - 20, 70)
+        );
+        assert_eq!(
+            place(Corner::BottomLeft, MON, 300, 80, 20),
+            (120, 50 + 1080 - 80 - 20)
+        );
         assert_eq!(place(Corner::BottomRight, MON, 300, 80, 20), (1700, 1030));
     }
 

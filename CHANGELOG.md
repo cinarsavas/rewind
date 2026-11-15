@@ -2,6 +2,28 @@
 
 All notable changes are listed here. The section for a tag becomes that release's notes.
 
+## [0.3.0]
+
+### Added
+- **Turkish interface.** Settings → General → Language switches the whole UI between English and Turkish; English stays the default. Missing translations fall back to English.
+- **Turkish voice clipping.** The Turkish model now folds `I`/`İ`/`ı` correctly, and switching the voice language follows its own default phrase (`clip that` / `klip al`) unless you typed your own.
+- **Four more toggle celebrations** — Comet, Confetti, Bloom and Bolt join the existing Shine, Sparkle, Creeper and Ripple, with a live preview when you pick one.
+- **A distinct clip-saved chime** so a saved replay is recognisable over game audio.
+- **Separate desktop and microphone devices.** Settings → Audio can record a specific speaker/headphones endpoint and a specific mic, like OBS, with a Refresh button. This fixes silent voice tracks caused by the wrong default device.
+- **Update checks.** Rewind asks the GitHub releases API at launch (switchable off) and on demand from About, and links straight to a newer release.
+- **Deep theming.** Themes can now set navigation width, content width, page margin, card radius, a background image, a gradient or a solid background, and the dimming level. In-game notifications use the theme palette too.
+- **One-click clip deletion.** The "Ask before deleting a clip" toggle can be turned off to send clips straight to the Recycle Bin.
+
+### Changed
+- Animations, low-power mode and effects now reliably apply to every switch, and live effects are cleared when animations are turned off.
+- The CPU-encoder note is softer and offers the Low-end preset instead of sounding like an error.
+
+### Fixed
+- Toggle effects sometimes not playing.
+- Voice capture staying silent when the default mic was not the one in use.
+- The speech listener now restarts itself after an error instead of staying dead.
+- Voice models load from paths with non-ASCII characters.
+
 ## [0.2.1]
 
 ### Fixed

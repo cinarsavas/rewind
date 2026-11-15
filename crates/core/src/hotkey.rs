@@ -15,8 +15,23 @@ pub struct Hotkey {
 }
 
 pub const NAMED_KEYS: &[&str] = &[
-    "Space", "Enter", "Tab", "Backspace", "Insert", "Delete", "Home", "End", "PageUp",
-    "PageDown", "Up", "Down", "Left", "Right", "PrintScreen", "ScrollLock", "Pause",
+    "Space",
+    "Enter",
+    "Tab",
+    "Backspace",
+    "Insert",
+    "Delete",
+    "Home",
+    "End",
+    "PageUp",
+    "PageDown",
+    "Up",
+    "Down",
+    "Left",
+    "Right",
+    "PrintScreen",
+    "ScrollLock",
+    "Pause",
 ];
 
 #[derive(Debug, PartialEq, Eq)]
@@ -36,7 +51,10 @@ impl fmt::Display for HotkeyError {
             HotkeyError::UnknownKey(k) => write!(f, "unknown key '{k}'"),
             HotkeyError::MultipleKeys => write!(f, "hotkey has more than one non-modifier key"),
             HotkeyError::NoModifierOnPlainKey(k) => {
-                write!(f, "'{k}' needs a modifier (Ctrl/Shift/Alt/Win) so it doesn't hijack typing")
+                write!(
+                    f,
+                    "'{k}' needs a modifier (Ctrl/Shift/Alt/Win) so it doesn't hijack typing"
+                )
             }
         }
     }
@@ -86,7 +104,13 @@ impl FromStr for Hotkey {
         if s.trim().is_empty() {
             return Err(HotkeyError::Empty);
         }
-        let mut hk = Hotkey { ctrl: false, shift: false, alt: false, win: false, key: String::new() };
+        let mut hk = Hotkey {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            win: false,
+            key: String::new(),
+        };
         for part in s.split('+') {
             let p = part.trim();
             match p.to_ascii_lowercase().as_str() {
@@ -98,7 +122,8 @@ impl FromStr for Hotkey {
                     if !hk.key.is_empty() {
                         return Err(HotkeyError::MultipleKeys);
                     }
-                    hk.key = canonical_key(p).ok_or_else(|| HotkeyError::UnknownKey(p.to_string()))?;
+                    hk.key =
+                        canonical_key(p).ok_or_else(|| HotkeyError::UnknownKey(p.to_string()))?;
                 }
             }
         }
@@ -161,7 +186,10 @@ mod tests {
     fn letters_digits_and_named_keys() {
         assert_eq!("Alt+r".parse::<Hotkey>().unwrap().to_string(), "Alt+R");
         assert_eq!("Ctrl+5".parse::<Hotkey>().unwrap().to_string(), "Ctrl+5");
-        assert_eq!("win+printscreen".parse::<Hotkey>().unwrap().to_string(), "Win+PrintScreen");
+        assert_eq!(
+            "win+printscreen".parse::<Hotkey>().unwrap().to_string(),
+            "Win+PrintScreen"
+        );
     }
 
     #[test]
@@ -169,9 +197,18 @@ mod tests {
         assert_eq!("".parse::<Hotkey>(), Err(HotkeyError::Empty));
         assert_eq!("Ctrl+Shift".parse::<Hotkey>(), Err(HotkeyError::NoKey));
         assert_eq!("Ctrl+A+B".parse::<Hotkey>(), Err(HotkeyError::MultipleKeys));
-        assert!(matches!("Ctrl+Banana".parse::<Hotkey>(), Err(HotkeyError::UnknownKey(_))));
-        assert!(matches!("A".parse::<Hotkey>(), Err(HotkeyError::NoModifierOnPlainKey(_))));
-        assert!(matches!("F25".parse::<Hotkey>(), Err(HotkeyError::UnknownKey(_))));
+        assert!(matches!(
+            "Ctrl+Banana".parse::<Hotkey>(),
+            Err(HotkeyError::UnknownKey(_))
+        ));
+        assert!(matches!(
+            "A".parse::<Hotkey>(),
+            Err(HotkeyError::NoModifierOnPlainKey(_))
+        ));
+        assert!(matches!(
+            "F25".parse::<Hotkey>(),
+            Err(HotkeyError::UnknownKey(_))
+        ));
     }
 
     #[test]
@@ -185,7 +222,9 @@ mod tests {
         struct W {
             k: Hotkey,
         }
-        let w = W { k: "Ctrl+Alt+Delete".parse().unwrap() };
+        let w = W {
+            k: "Ctrl+Alt+Delete".parse().unwrap(),
+        };
         let s = toml::to_string(&w).unwrap();
         assert_eq!(toml::from_str::<W>(&s).unwrap(), w);
     }

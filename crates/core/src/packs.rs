@@ -63,13 +63,21 @@ impl PackIndex {
         files.extend(self.theme.iter().map(|t| (t.id.as_str(), &t.file)));
         for (name, f) in files {
             if !allowed_download_url(&f.url) {
-                return Err(format!("pack '{name}' points at a disallowed URL: {}", f.url));
+                return Err(format!(
+                    "pack '{name}' points at a disallowed URL: {}",
+                    f.url
+                ));
             }
             if !valid_sha256(&f.sha256) {
                 return Err(format!("pack '{name}' has no valid SHA-256"));
             }
         }
-        for id in self.voice.iter().map(|v| &v.id).chain(self.theme.iter().map(|t| &t.id)) {
+        for id in self
+            .voice
+            .iter()
+            .map(|v| &v.id)
+            .chain(self.theme.iter().map(|t| &t.id))
+        {
             if !valid_id(id) {
                 return Err(format!("pack id '{id}' contains unsafe characters"));
             }
@@ -88,18 +96,38 @@ pub fn valid_sha256(s: &str) -> bool {
 
 /// Pack ids become folder / file names, so keep them boring.
 pub fn valid_id(id: &str) -> bool {
-    !id.is_empty() && id.len() <= 40 && id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    !id.is_empty()
+        && id.len() <= 40
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
 /// Only HTTPS, and only GitHub's own download hosts.
 pub fn allowed_download_url(url: &str) -> bool {
-    let Some(rest) = url.strip_prefix("https://") else { return false };
+    let Some(rest) = url.strip_prefix("https://") else {
+        return false;
+    };
     let host = rest.split(['/', '?', '#']).next().unwrap_or("");
     if host.contains('@') || host.contains(':') {
         return false;
     }
-    const HOSTS: [&str; 4] = ["github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com", "raw.githubusercontent.com"];
+    const HOSTS: [&str; 4] = [
+        "github.com",
+        "objects.githubusercontent.com",
+        "release-assets.githubusercontent.com",
+        "raw.githubusercontent.com",
+    ];
     HOSTS.contains(&host)
+}
+
+/// The GitHub release API. Kept separate from the pack allow-list so pack files can never
+/// point at the API; only the update checker uses this.
+pub fn is_github_api(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("https://api.github.com/") else {
+        return false;
+    };
+    !rest.is_empty() && !rest.contains([' ', '\t', '\r', '\n']) && !rest.starts_with('@')
 }
 
 /// Turn a zip entry name into a path that stays inside the extraction root, or `None` if
@@ -123,7 +151,11 @@ pub fn safe_entry_path(name: &str) -> Option<PathBuf> {
             _ => return None,
         }
     }
-    if out.as_os_str().is_empty() { None } else { Some(out) }
+    if out.as_os_str().is_empty() {
+        None
+    } else {
+        Some(out)
+    }
 }
 
 #[cfg(test)]
@@ -134,19 +166,36 @@ mod tests {
 
     #[test]
     fn url_allow_list() {
-        assert!(allowed_download_url("https://github.com/o/r/releases/download/v1/a.zip"));
-        assert!(allowed_download_url("https://objects.githubusercontent.com/x"));
+        assert!(allowed_download_url(
+            "https://github.com/o/r/releases/download/v1/a.zip"
+        ));
+        assert!(allowed_download_url(
+            "https://objects.githubusercontent.com/x"
+        ));
         assert!(!allowed_download_url("http://github.com/o/r/a.zip"));
-        assert!(!allowed_download_url("https://evil.example/github.com/a.zip"));
-        assert!(!allowed_download_url("https://github.com.evil.example/a.zip"));
+        assert!(!allowed_download_url(
+            "https://evil.example/github.com/a.zip"
+        ));
+        assert!(!allowed_download_url(
+            "https://github.com.evil.example/a.zip"
+        ));
         assert!(!allowed_download_url("https://user@github.com/a.zip"));
         assert!(!allowed_download_url("https://github.com:8443/a.zip"));
         assert!(!allowed_download_url("ftp://github.com/a"));
+        assert!(is_github_api(
+            "https://api.github.com/repos/o/r/releases/latest"
+        ));
+        assert!(!is_github_api("https://api.github.com/"));
+        assert!(!is_github_api("https://evil.example/api.github.com/x"));
+        assert!(!is_github_api("http://api.github.com/repos/o/r"));
     }
 
     #[test]
     fn zip_slip_is_blocked() {
-        assert_eq!(safe_entry_path("model/am/final.mdl"), Some(PathBuf::from("model/am/final.mdl")));
+        assert_eq!(
+            safe_entry_path("model/am/final.mdl"),
+            Some(PathBuf::from("model/am/final.mdl"))
+        );
         assert_eq!(safe_entry_path("./a/b.txt"), Some(PathBuf::from("a/b.txt")));
         assert_eq!(safe_entry_path("a\\b.txt"), Some(PathBuf::from("a/b.txt")));
         assert_eq!(safe_entry_path("../evil.dll"), None);
@@ -213,6 +262,9 @@ mod tests {
     #[test]
     fn empty_index_is_fine_and_url_is_built_from_repo() {
         assert_eq!(PackIndex::from_toml("").unwrap(), PackIndex::default());
-        assert_eq!(index_url("me/rewind"), "https://github.com/me/rewind/releases/latest/download/packs.toml");
+        assert_eq!(
+            index_url("me/rewind"),
+            "https://github.com/me/rewind/releases/latest/download/packs.toml"
+        );
     }
 }

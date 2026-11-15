@@ -28,7 +28,10 @@ impl std::fmt::Display for TrimError {
         match self {
             TrimError::RangeTooShort => write!(f, "the selected range must be at least 0.1 s long"),
             TrimError::NegativeStart => write!(f, "start time can't be negative"),
-            TrimError::SameFile => write!(f, "output would overwrite the input; choose a different name"),
+            TrimError::SameFile => write!(
+                f,
+                "output would overwrite the input; choose a different name"
+            ),
         }
     }
 }
@@ -41,7 +44,11 @@ impl TrimJob {
             return Err(TrimError::SameFile);
         }
         if let Some(n) = self.last_secs {
-            return if n < 0.1 { Err(TrimError::RangeTooShort) } else { Ok(()) };
+            return if n < 0.1 {
+                Err(TrimError::RangeTooShort)
+            } else {
+                Ok(())
+            };
         }
         if self.start_secs < 0.0 {
             return Err(TrimError::NegativeStart);
@@ -55,14 +62,22 @@ impl TrimJob {
     /// Arguments for `ffmpeg`. `-ss` before `-i` makes seeking fast; with stream copy the
     /// cut lands on the nearest earlier keyframe, which is the price of not re-encoding.
     pub fn ffmpeg_args(&self) -> Vec<String> {
-        let mut a: Vec<String> = vec!["-hide_banner".into(), "-loglevel".into(), "error".into(), "-y".into()];
+        let mut a: Vec<String> = vec![
+            "-hide_banner".into(),
+            "-loglevel".into(),
+            "error".into(),
+            "-y".into(),
+        ];
         match self.last_secs {
             Some(n) => a.extend(["-sseof".into(), format!("-{n:.3}")]),
             None => a.extend(["-ss".into(), format!("{:.3}", self.start_secs)]),
         }
         a.extend(["-i".into(), self.input.to_string_lossy().into_owned()]);
         if self.last_secs.is_none() {
-            a.extend(["-t".into(), format!("{:.3}", self.end_secs - self.start_secs)]);
+            a.extend([
+                "-t".into(),
+                format!("{:.3}", self.end_secs - self.start_secs),
+            ]);
         }
         a.extend(["-map".into(), "0:v:0".into()]);
         if self.keep_audio.is_empty() {
@@ -85,14 +100,24 @@ impl TrimJob {
 
 /// Default output name: `<stem>-trim.<ext>` next to the input.
 pub fn default_output(input: &Path) -> PathBuf {
-    let stem = input.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "clip".into());
-    let ext = input.extension().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "mp4".into());
+    let stem = input
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "clip".into());
+    let ext = input
+        .extension()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "mp4".into());
     input.with_file_name(format!("{stem}-trim.{ext}"))
 }
 
 /// Look for ffmpeg next to the app first, then on PATH.
 pub fn find_ffmpeg(app_dir: Option<&Path>) -> Option<PathBuf> {
-    let exe = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
+    let exe = if cfg!(windows) {
+        "ffmpeg.exe"
+    } else {
+        "ffmpeg"
+    };
     if let Some(dir) = app_dir {
         let p = dir.join(exe);
         if p.is_file() {
@@ -100,7 +125,9 @@ pub fn find_ffmpeg(app_dir: Option<&Path>) -> Option<PathBuf> {
         }
     }
     std::env::var_os("PATH").and_then(|paths| {
-        std::env::split_paths(&paths).map(|d| d.join(exe)).find(|p| p.is_file())
+        std::env::split_paths(&paths)
+            .map(|d| d.join(exe))
+            .find(|p| p.is_file())
     })
 }
 
@@ -162,6 +189,9 @@ mod tests {
 
     #[test]
     fn default_output_sits_beside_input() {
-        assert_eq!(default_output(Path::new("/clips/a b.mkv")), PathBuf::from("/clips/a b-trim.mkv"));
+        assert_eq!(
+            default_output(Path::new("/clips/a b.mkv")),
+            PathBuf::from("/clips/a b-trim.mkv")
+        );
     }
 }

@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 use crate::hotkey::Hotkey;
+use crate::i18n::{default_phrase, Lang};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -94,7 +95,12 @@ pub enum Corner {
 }
 
 impl Corner {
-    pub const ALL: [Corner; 4] = [Corner::TopLeft, Corner::TopRight, Corner::BottomLeft, Corner::BottomRight];
+    pub const ALL: [Corner; 4] = [
+        Corner::TopLeft,
+        Corner::TopRight,
+        Corner::BottomLeft,
+        Corner::BottomRight,
+    ];
     pub fn label(self) -> &'static str {
         match self {
             Corner::TopLeft => "Top left",
@@ -161,8 +167,12 @@ pub fn output_size(base_w: u32, base_h: u32, res: Resolution) -> (u32, u32) {
 pub struct AudioConfig {
     pub desktop_enabled: bool,
     pub desktop_volume: f32,
+    /// WASAPI endpoint id for desktop audio; empty means the Windows default device.
+    pub desktop_device: String,
     pub mic_enabled: bool,
     pub mic_volume: f32,
+    /// WASAPI endpoint id for the microphone; empty means the Windows default device.
+    pub mic_device: String,
     pub bitrate_kbps: u32,
 }
 
@@ -171,8 +181,10 @@ impl Default for AudioConfig {
         Self {
             desktop_enabled: true,
             desktop_volume: 1.0,
+            desktop_device: String::new(),
             mic_enabled: false,
             mic_volume: 1.0,
+            mic_device: String::new(),
             bitrate_kbps: 192,
         }
     }
@@ -202,7 +214,9 @@ impl DisplayMethod {
     pub fn blurb(self) -> &'static str {
         match self {
             DisplayMethod::Dxgi => "Best on Windows 10: fast and no yellow recording border.",
-            DisplayMethod::Wgc => "Needed on some Windows 11 setups, but Windows 10 draws a yellow border.",
+            DisplayMethod::Wgc => {
+                "Needed on some Windows 11 setups, but Windows 10 draws a yellow border."
+            }
         }
     }
 }
@@ -217,17 +231,25 @@ pub enum EffectStyle {
     Sparkle,
     Creeper,
     Ripple,
+    Confetti,
+    Comet,
+    Bloom,
+    Bolt,
 }
 
 impl EffectStyle {
-    pub const ALL: [EffectStyle; 5] = [
+    pub const ALL: [EffectStyle; 9] = [
         EffectStyle::None,
         EffectStyle::Shine,
         EffectStyle::Sparkle,
         EffectStyle::Creeper,
         EffectStyle::Ripple,
+        EffectStyle::Confetti,
+        EffectStyle::Comet,
+        EffectStyle::Bloom,
+        EffectStyle::Bolt,
     ];
-    /// Short label for the segmented control.
+    /// Short label for the picker.
     pub fn label(self) -> &'static str {
         match self {
             EffectStyle::None => "Off",
@@ -235,6 +257,10 @@ impl EffectStyle {
             EffectStyle::Sparkle => "Sparkle",
             EffectStyle::Creeper => "Creeper",
             EffectStyle::Ripple => "Ripple",
+            EffectStyle::Confetti => "Confetti",
+            EffectStyle::Comet => "Comet",
+            EffectStyle::Bloom => "Bloom",
+            EffectStyle::Bolt => "Bolt",
         }
     }
     pub fn blurb(self) -> &'static str {
@@ -244,6 +270,10 @@ impl EffectStyle {
             EffectStyle::Sparkle => "A burst of tiny stars.",
             EffectStyle::Creeper => "A pixel creeper goes boom.",
             EffectStyle::Ripple => "Calm expanding rings.",
+            EffectStyle::Confetti => "Colourful paper thrown in the air.",
+            EffectStyle::Comet => "A bright streak with a glowing tail.",
+            EffectStyle::Bloom => "Petals unfold from a bright centre.",
+            EffectStyle::Bolt => "A quick spark of lightning.",
         }
     }
 }
@@ -289,7 +319,24 @@ pub struct VoiceConfig {
 
 impl Default for VoiceConfig {
     fn default() -> Self {
-        Self { enabled: false, language: "en-us".into(), phrase: "clip that".into(), sensitivity: 0.5 }
+        Self {
+            enabled: false,
+            language: "en-us".into(),
+            phrase: default_phrase(Lang::English).into(),
+            sensitivity: 0.5,
+        }
+    }
+}
+
+impl VoiceConfig {
+    /// The trigger phrase to show when the user hasn't typed their own.
+    pub fn effective_phrase(&self) -> String {
+        let trimmed = self.phrase.trim();
+        if trimmed.is_empty() {
+            default_phrase(Lang::from_id(&self.language)).to_string()
+        } else {
+            trimmed.to_string()
+        }
     }
 }
 
@@ -334,6 +381,12 @@ pub struct Config {
     pub low_power_ui: bool,
     /// Show video thumbnails in the clip list (uses Windows' own thumbnail cache).
     pub thumbnails: bool,
+    /// Interface language. Always defaults to English, even for translated builds.
+    pub language: Lang,
+    /// Ask before deleting a clip. Turn off to delete straight to the Recycle Bin.
+    pub confirm_delete: bool,
+    /// Check GitHub for a newer release shortly after launch.
+    pub check_updates: bool,
     /// Id of the active theme; "default" is built in, others are optional downloads.
     pub theme: String,
     pub voice: VoiceConfig,
@@ -374,6 +427,9 @@ impl Default for Config {
             effects: EffectStyle::Shine,
             low_power_ui: false,
             thumbnails: true,
+            language: Lang::English,
+            confirm_delete: true,
+            check_updates: true,
             theme: "default".into(),
             voice: VoiceConfig::default(),
             audio: AudioConfig::default(),
@@ -403,7 +459,7 @@ impl Config {
         self.overlay_secs = self.overlay_secs.clamp(1, 10);
         self.voice.sensitivity = self.voice.sensitivity.clamp(0.0, 1.0);
         if self.voice.phrase.trim().is_empty() {
-            self.voice.phrase = VoiceConfig::default().phrase;
+            self.voice.phrase = default_phrase(Lang::from_id(&self.voice.language)).into();
         }
         if self.theme.trim().is_empty() {
             self.theme = "default".into();
@@ -411,6 +467,12 @@ impl Config {
         self.audio.desktop_volume = self.audio.desktop_volume.clamp(0.0, 2.0);
         self.audio.mic_volume = self.audio.mic_volume.clamp(0.0, 4.0);
         self.audio.bitrate_kbps = self.audio.bitrate_kbps.clamp(64, 320);
+        if self.audio.desktop_device.trim().is_empty() {
+            self.audio.desktop_device.clear();
+        }
+        if self.audio.mic_device.trim().is_empty() {
+            self.audio.mic_device.clear();
+        }
         if self.save_hotkey == self.toggle_hotkey {
             self.toggle_hotkey = Config::default().toggle_hotkey;
         }
@@ -488,6 +550,9 @@ impl Config {
         same.effects = self.effects;
         same.low_power_ui = self.low_power_ui;
         same.thumbnails = self.thumbnails;
+        same.language = self.language;
+        same.confirm_delete = self.confirm_delete;
+        same.check_updates = self.check_updates;
         same.theme = self.theme.clone();
         same.voice = self.voice.clone();
         *self != same
@@ -511,8 +576,7 @@ impl Config {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let text = toml::to_string_pretty(self)
-            .map_err(std::io::Error::other)?;
+        let text = toml::to_string_pretty(self).map_err(std::io::Error::other)?;
         // Write-then-rename so a crash mid-save can't leave a half-written config.
         let tmp = path.with_extension("toml.tmp");
         std::fs::write(&tmp, text)?;
@@ -584,8 +648,19 @@ mod tests {
         high.apply_preset(Preset::HighQuality);
         assert!(low.bitrate_kbps < bal.bitrate_kbps && bal.bitrate_kbps < high.bitrate_kbps);
         assert!(low.fps < bal.fps);
-        assert!(!low.animations && !low.smooth_scroll && low.effects == EffectStyle::None && low.low_power_ui && !low.thumbnails);
-        assert!(bal.animations && bal.smooth_scroll && bal.effects == EffectStyle::Shine && !bal.low_power_ui);
+        assert!(
+            !low.animations
+                && !low.smooth_scroll
+                && low.effects == EffectStyle::None
+                && low.low_power_ui
+                && !low.thumbnails
+        );
+        assert!(
+            bal.animations
+                && bal.smooth_scroll
+                && bal.effects == EffectStyle::Shine
+                && !bal.low_power_ui
+        );
         for c in [&low, &bal, &high] {
             let mut copy = (*c).clone();
             copy.sanitize();
@@ -595,9 +670,11 @@ mod tests {
 
     #[test]
     fn presets_keep_personal_settings() {
-        let mut c = Config::default();
-        c.theme = "midnight".into();
-        c.overlay_corner = Corner::BottomLeft;
+        let mut c = Config {
+            theme: "midnight".into(),
+            overlay_corner: Corner::BottomLeft,
+            ..Default::default()
+        };
         c.apply_preset(Preset::LowEnd);
         assert_eq!(c.theme, "midnight");
         assert_eq!(c.overlay_corner, Corner::BottomLeft);
@@ -636,8 +713,10 @@ mod tests {
 
     #[test]
     fn overlay_duration_is_clamped() {
-        let mut cfg = Config::default();
-        cfg.overlay_secs = 0;
+        let mut cfg = Config {
+            overlay_secs: 0,
+            ..Default::default()
+        };
         cfg.sanitize();
         assert_eq!(cfg.overlay_secs, 1);
         cfg.overlay_secs = 99;
@@ -647,10 +726,12 @@ mod tests {
 
     #[test]
     fn sanitize_clamps_out_of_range_values() {
-        let mut cfg = Config::default();
-        cfg.fps = 100;
-        cfg.bitrate_kbps = 5;
-        cfg.buffer_secs = 99_999;
+        let mut cfg = Config {
+            fps: 100,
+            bitrate_kbps: 5,
+            buffer_secs: 99_999,
+            ..Default::default()
+        };
         cfg.audio.mic_volume = 99.0;
         cfg.toggle_hotkey = cfg.save_hotkey.clone();
         cfg.sanitize();

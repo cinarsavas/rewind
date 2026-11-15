@@ -32,7 +32,9 @@ fn main() {
 
     // Release builds on GitHub fetch add-ons from their own repository. A local build falls
     // back to the upstream project so the Add-ons page works without CI.
-    let repo = env::var("REWIND_REPO").or_else(|_| env::var("GITHUB_REPOSITORY")).unwrap_or_else(|_| "cinarsavas/rewind".into());
+    let repo = env::var("REWIND_REPO")
+        .or_else(|_| env::var("GITHUB_REPOSITORY"))
+        .unwrap_or_else(|_| "cinarsavas/rewind".into());
     println!("cargo:rustc-env=REWIND_REPO={repo}");
 
     if env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
@@ -50,7 +52,10 @@ fn main() {
             .set("FileDescription", "Rewind - instant replay recorder")
             .set("InternalName", "Rewind")
             .set("OriginalFilename", "Rewind.exe")
-            .set("LegalCopyright", "GPL-3.0-or-later. Capture by libobs (OBS Studio).")
+            .set(
+                "LegalCopyright",
+                "GPL-3.0-or-later. Capture by libobs (OBS Studio).",
+            )
             .set_manifest(MANIFEST);
         if let Err(e) = res.compile() {
             println!("cargo:warning=couldn't embed Windows resources: {e}");

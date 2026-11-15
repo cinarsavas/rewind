@@ -3,8 +3,9 @@
 #[cfg(not(windows))]
 compile_error!("Rewind uses Windows capture APIs and only builds for Windows targets (x86_64-pc-windows-msvc).");
 
-mod engine;
+mod audio;
 mod download;
+mod engine;
 mod hotkeys;
 mod overlay;
 mod packs;
@@ -13,8 +14,9 @@ mod platform;
 mod runtime;
 mod thumbs;
 mod tray;
-mod voice;
 mod ui;
+mod updates;
+mod voice;
 
 fn main() -> eframe::Result<()> {
     // Used when building the installer: fetch the OBS runtime next to the exe, then exit.
@@ -40,5 +42,9 @@ fn main() -> eframe::Result<()> {
             .with_min_inner_size([900.0, 600.0]),
         ..Default::default()
     };
-    eframe::run_native("Rewind", options, Box::new(move |cc| Ok(Box::new(ui::RewindApp::new(cc, start_hidden)))))
+    eframe::run_native(
+        "Rewind",
+        options,
+        Box::new(move |cc| Ok(Box::new(ui::RewindApp::new(cc, start_hidden)))),
+    )
 }

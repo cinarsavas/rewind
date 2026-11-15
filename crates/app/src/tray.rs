@@ -52,12 +52,24 @@ impl Tray {
         let folder = MenuItem::new("Open clips folder", true, None);
         let quit = MenuItem::new("Quit Rewind", true, None);
         let menu = Menu::new();
-        menu.append_items(&[&open, &save, &toggle, &folder, &PredefinedMenuItem::separator(), &quit])
-            .map_err(|e| format!("tray menu: {e}"))?;
+        menu.append_items(&[
+            &open,
+            &save,
+            &toggle,
+            &folder,
+            &PredefinedMenuItem::separator(),
+            &quit,
+        ])
+        .map_err(|e| format!("tray menu: {e}"))?;
 
         let (tx, rx) = channel();
-        let (open_id, save_id, toggle_id, folder_id, quit_id) =
-            (open.id().clone(), save.id().clone(), toggle.id().clone(), folder.id().clone(), quit.id().clone());
+        let (open_id, save_id, toggle_id, folder_id, quit_id) = (
+            open.id().clone(),
+            save.id().clone(),
+            toggle.id().clone(),
+            folder.id().clone(),
+            quit.id().clone(),
+        );
         {
             let (tx, ctx) = (tx.clone(), ctx.clone());
             MenuEvent::set_event_handler(Some(move |e: MenuEvent| {
@@ -81,8 +93,14 @@ impl Tray {
         TrayIconEvent::set_event_handler(Some(move |e: TrayIconEvent| {
             let show = matches!(
                 e,
-                TrayIconEvent::DoubleClick { button: MouseButton::Left, .. }
-                    | TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. }
+                TrayIconEvent::DoubleClick {
+                    button: MouseButton::Left,
+                    ..
+                } | TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
+                    ..
+                }
             );
             if show {
                 let _ = tx.send(TrayAction::Show);
@@ -98,7 +116,12 @@ impl Tray {
             builder = builder.with_icon(icon);
         }
         let icon = builder.build().map_err(|e| format!("tray icon: {e}"))?;
-        Ok(Tray { icon, toggle, rx, last_on: buffer_on })
+        Ok(Tray {
+            icon,
+            toggle,
+            rx,
+            last_on: buffer_on,
+        })
     }
 
     pub fn poll(&self) -> Vec<TrayAction> {
@@ -119,5 +142,9 @@ impl Tray {
 }
 
 fn tooltip(on: bool) -> &'static str {
-    if on { "Rewind — Instant Replay is on" } else { "Rewind — Instant Replay is off" }
+    if on {
+        "Rewind — Instant Replay is on"
+    } else {
+        "Rewind — Instant Replay is off"
+    }
 }

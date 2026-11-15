@@ -57,7 +57,8 @@ impl VoiceGate {
         if chunk.is_empty() {
             return None;
         }
-        let energy: f64 = chunk.iter().map(|s| (*s as f64) * (*s as f64)).sum::<f64>() / chunk.len() as f64;
+        let energy: f64 =
+            chunk.iter().map(|s| (*s as f64) * (*s as f64)).sum::<f64>() / chunk.len() as f64;
         let rms = (energy.sqrt() / 32768.0) as f32;
         self.level = rms.clamp(0.0, 1.0);
 
@@ -89,19 +90,31 @@ impl VoiceGate {
 }
 
 /// Lower-case, strip accents' combining marks and punctuation, collapse whitespace.
+///
+/// Turkish needs care: `to_lowercase()` turns `I` into `i` (English) and `İ` into `i` plus
+/// a combining dot, which would make `KAYIT` and `kayıt` different. Folding the Turkish
+/// dotless `ı`, `I` and `İ` all onto `i` makes a trigger phrase match whichever spelling
+/// the recogniser produces, in English and Turkish alike.
 pub fn normalize(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut last_space = true;
-    for ch in s.chars().flat_map(|c| c.to_lowercase()) {
-        if ('\u{0300}'..='\u{036f}').contains(&ch) {
-            continue; // combining marks, e.g. the dot Rust leaves when lower-casing Turkish 'İ'
-        }
-        if ch.is_alphanumeric() {
-            out.push(ch);
+    for ch in s.chars() {
+        if matches!(ch, 'I' | 'İ' | 'ı') {
+            out.push('i');
             last_space = false;
-        } else if !last_space {
-            out.push(' ');
-            last_space = true;
+            continue;
+        }
+        for lc in ch.to_lowercase() {
+            if ('\u{0300}'..='\u{036f}').contains(&lc) {
+                continue; // combining marks, e.g. the dot Rust leaves when lower-casing 'İ'
+            }
+            if lc.is_alphanumeric() {
+                out.push(lc);
+                last_space = false;
+            } else if !last_space {
+                out.push(' ');
+                last_space = true;
+            }
         }
     }
     out.trim().to_string()
@@ -117,7 +130,15 @@ pub struct PhraseMatcher {
 
 impl PhraseMatcher {
     pub fn new(phrase: &str, cooldown_ms: u64) -> Self {
-        Self { words: normalize(phrase).split(' ').filter(|w| !w.is_empty()).map(String::from).collect(), cooldown_ms, last_fire_ms: None }
+        Self {
+            words: normalize(phrase)
+                .split(' ')
+                .filter(|w| !w.is_empty())
+                .map(String::from)
+                .collect(),
+            cooldown_ms,
+            last_fire_ms: None,
+        }
     }
 
     pub fn phrase(&self) -> String {
@@ -130,7 +151,9 @@ impl PhraseMatcher {
         }
         let norm = normalize(recognised);
         let heard: Vec<&str> = norm.split(' ').filter(|w| !w.is_empty()).collect();
-        let hit = heard.windows(self.words.len()).any(|w| w.iter().zip(&self.words).all(|(a, b)| a == b));
+        let hit = heard
+            .windows(self.words.len())
+            .any(|w| w.iter().zip(&self.words).all(|(a, b)| a == b));
         if !hit {
             return false;
         }
@@ -147,7 +170,8 @@ impl PhraseMatcher {
 /// Vosk grammar: only the trigger phrase (plus `[unk]`) can be recognised, which is both
 /// faster and far less prone to false triggers than free dictation.
 pub fn grammar_json(phrase: &str) -> String {
-    serde_json::to_string(&[normalize(phrase).as_str(), "[unk]"]).unwrap_or_else(|_| "[\"[unk]\"]".into())
+    serde_json::to_string(&[normalize(phrase).as_str(), "[unk]"])
+        .unwrap_or_else(|_| "[\"[unk]\"]".into())
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -160,9 +184,17 @@ pub struct Recognised {
 pub fn parse_result(json: &str) -> Option<Recognised> {
     let v: serde_json::Value = serde_json::from_str(json).ok()?;
     if let Some(t) = v.get("text").and_then(|t| t.as_str()) {
-        return Some(Recognised { text: t.to_string(), partial: false });
+        return Some(Recognised {
+            text: t.to_string(),
+            partial: false,
+        });
     }
-    v.get("partial").and_then(|t| t.as_str()).map(|t| Recognised { text: t.to_string(), partial: true })
+    v.get("partial")
+        .and_then(|t| t.as_str())
+        .map(|t| Recognised {
+            text: t.to_string(),
+            partial: true,
+        })
 }
 
 #[cfg(test)]
@@ -170,7 +202,9 @@ mod tests {
     use super::*;
 
     fn tone(amplitude: i16, n: usize) -> Vec<i16> {
-        (0..n).map(|i| if i % 2 == 0 { amplitude } else { -amplitude }).collect()
+        (0..n)
+            .map(|i| if i % 2 == 0 { amplitude } else { -amplitude })
+            .collect()
     }
 
     #[test]
@@ -188,7 +222,9 @@ mod tests {
         for _ in 0..5 {
             g.push(&tone(10, 1600));
         }
-        let out = g.push(&tone(6000, 1600)).expect("loud chunk opens the gate");
+        let out = g
+            .push(&tone(6000, 1600))
+            .expect("loud chunk opens the gate");
         // 0.3 s of pre-roll (4800 samples) + the loud chunk.
         assert_eq!(out.len(), 4800 + 1600);
         assert!(g.is_open());
@@ -227,8 +263,19 @@ mod tests {
     fn normalisation_handles_case_punctuation_and_turkish() {
         assert_eq!(normalize("  Clip   THAT!! "), "clip that");
         assert_eq!(normalize("Kaydet."), "kaydet");
-        assert_eq!(normalize("İyi kayıt"), "iyi kayıt");
+        assert_eq!(normalize("İyi kayıt"), "iyi kayit");
+        assert_eq!(normalize("KAYIT"), "kayit");
+        assert_eq!(normalize("KAYIT"), normalize("kayıt"));
+        assert_eq!(normalize("KLİP AL"), "klip al");
         assert_eq!(normalize("!!!"), "");
+    }
+
+    #[test]
+    fn matches_turkish_phrase_regardless_of_dotted_i() {
+        let mut m = PhraseMatcher::new("KLİP AL", 0);
+        assert!(m.matches("klip al", 1));
+        let mut m = PhraseMatcher::new("kayıt al", 0);
+        assert!(m.matches("KAYIT AL", 1));
     }
 
     #[test]
@@ -261,8 +308,20 @@ mod tests {
 
     #[test]
     fn parses_vosk_results() {
-        assert_eq!(parse_result("{\"text\" : \"clip that\"}"), Some(Recognised { text: "clip that".into(), partial: false }));
-        assert_eq!(parse_result("{\"partial\" : \"clip\"}"), Some(Recognised { text: "clip".into(), partial: true }));
+        assert_eq!(
+            parse_result("{\"text\" : \"clip that\"}"),
+            Some(Recognised {
+                text: "clip that".into(),
+                partial: false
+            })
+        );
+        assert_eq!(
+            parse_result("{\"partial\" : \"clip\"}"),
+            Some(Recognised {
+                text: "clip".into(),
+                partial: true
+            })
+        );
         assert_eq!(parse_result("not json"), None);
         assert_eq!(parse_result("{\"other\": 1}"), None);
     }

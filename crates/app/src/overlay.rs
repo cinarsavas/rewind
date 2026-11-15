@@ -14,7 +14,9 @@ use std::sync::mpsc::{channel, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
 use rewind_core::config::Corner;
-use rewind_core::toast::{alpha_at, place, rounded_rect_coverage, slide_remaining, Rect, ToastKind, ToastSpec};
+use rewind_core::toast::{
+    alpha_at, place, rounded_rect_coverage, slide_remaining, Rect, ToastKind, ToastSpec,
+};
 use windows_sys::Win32::Foundation::{HWND, POINT, RECT, SIZE};
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -22,8 +24,50 @@ use windows_sys::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 enum Cmd {
-    Show { spec: ToastSpec, corner: Corner, secs: f32 },
+    Show {
+        spec: ToastSpec,
+        corner: Corner,
+        secs: f32,
+        colors: ToastColors,
+    },
     Quit,
+}
+
+/// Colours for the native toast, taken from the active theme so in-game notifications match
+/// the app. Values are 0xRRGGBB.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ToastColors {
+    pub card: u32,
+    pub border: u32,
+    pub title: u32,
+    pub subtitle: u32,
+    pub success: u32,
+    pub info: u32,
+    pub error: u32,
+}
+
+impl Default for ToastColors {
+    fn default() -> Self {
+        Self {
+            card: 0x1a1e28,
+            border: 0x343c4f,
+            title: 0xe6e9f0,
+            subtitle: 0x8a93a6,
+            success: 0x4ad6a7,
+            info: 0x7aa2ff,
+            error: 0xff5d6c,
+        }
+    }
+}
+
+impl ToastColors {
+    fn accent(&self, kind: ToastKind) -> u32 {
+        match kind {
+            ToastKind::Success => self.success,
+            ToastKind::Info => self.info,
+            ToastKind::Error => self.error,
+        }
+    }
 }
 
 pub struct Overlay {
@@ -40,8 +84,13 @@ impl Overlay {
         Overlay { tx }
     }
 
-    pub fn show(&self, spec: ToastSpec, corner: Corner, secs: u32) {
-        let _ = self.tx.send(Cmd::Show { spec, corner, secs: secs as f32 });
+    pub fn show(&self, spec: ToastSpec, corner: Corner, secs: u32, colors: ToastColors) {
+        let _ = self.tx.send(Cmd::Show {
+            spec,
+            corner,
+            secs: secs as f32,
+            colors,
+        });
     }
 }
 
@@ -123,11 +172,16 @@ fn run(rx: std::sync::mpsc::Receiver<Cmd>) {
             // so this thread costs nothing on slow PCs.
             let wait = if active.is_some() { 16 } else { 400 };
             match rx.recv_timeout(Duration::from_millis(wait)) {
-                Ok(Cmd::Show { spec, corner, secs }) => {
+                Ok(Cmd::Show {
+                    spec,
+                    corner,
+                    secs,
+                    colors,
+                }) => {
                     if let Some(old) = active.take() {
                         free(old);
                     }
-                    active = start_toast(hwnd, screen_dc, &spec, corner, secs);
+                    active = start_toast(hwnd, screen_dc, &spec, corner, secs, &colors);
                 }
                 Ok(Cmd::Quit) | Err(RecvTimeoutError::Disconnected) => break,
                 Err(RecvTimeoutError::Timeout) => {}
@@ -141,11 +195,21 @@ fn run(rx: std::sync::mpsc::Receiver<Cmd>) {
                 } else {
                     let alpha = (alpha_at(t, a.total) * 255.0).round() as u8;
                     let slide = -((slide_remaining(t) * 14.0) as i32 * a.dir_y);
-                    let dst = POINT { x: a.x, y: a.y + slide };
+                    let dst = POINT {
+                        x: a.x,
+                        y: a.y + slide,
+                    };
                     let size = SIZE { cx: a.w, cy: a.h };
                     let src = POINT { x: 0, y: 0 };
-                    let blend = BLENDFUNCTION { BlendOp: AC_SRC_OVER as u8, BlendFlags: 0, SourceConstantAlpha: alpha, AlphaFormat: AC_SRC_ALPHA as u8 };
-                    UpdateLayeredWindow(hwnd, screen_dc, &dst, &size, a.mem_dc, &src, 0, &blend, ULW_ALPHA);
+                    let blend = BLENDFUNCTION {
+                        BlendOp: AC_SRC_OVER as u8,
+                        BlendFlags: 0,
+                        SourceConstantAlpha: alpha,
+                        AlphaFormat: AC_SRC_ALPHA as u8,
+                    };
+                    UpdateLayeredWindow(
+                        hwnd, screen_dc, &dst, &size, a.mem_dc, &src, 0, &blend, ULW_ALPHA,
+                    );
                 }
             }
         }
@@ -165,14 +229,27 @@ unsafe fn free(a: Active) {
 
 unsafe fn target_monitor() -> (Rect, f32) {
     let fg = GetForegroundWindow();
-    let hmon = MonitorFromWindow(if fg.is_null() { GetDesktopWindow() } else { fg }, MONITOR_DEFAULTTOPRIMARY);
+    let hmon = MonitorFromWindow(
+        if fg.is_null() { GetDesktopWindow() } else { fg },
+        MONITOR_DEFAULTTOPRIMARY,
+    );
     let mut mi: MONITORINFO = zeroed();
     mi.cbSize = size_of::<MONITORINFO>() as u32;
     let rect = if GetMonitorInfoW(hmon, &mut mi) != 0 {
         let r = mi.rcMonitor;
-        Rect { x: r.left, y: r.top, w: r.right - r.left, h: r.bottom - r.top }
+        Rect {
+            x: r.left,
+            y: r.top,
+            w: r.right - r.left,
+            h: r.bottom - r.top,
+        }
     } else {
-        Rect { x: 0, y: 0, w: 1920, h: 1080 }
+        Rect {
+            x: 0,
+            y: 0,
+            w: 1920,
+            h: 1080,
+        }
     };
     let (mut dx, mut dy) = (96u32, 96u32);
     if GetDpiForMonitor(hmon, MDT_EFFECTIVE_DPI, &mut dx, &mut dy) != 0 || dx == 0 {
@@ -181,7 +258,14 @@ unsafe fn target_monitor() -> (Rect, f32) {
     (rect, dx as f32 / 96.0)
 }
 
-unsafe fn start_toast(hwnd: HWND, screen_dc: HDC, spec: &ToastSpec, corner: Corner, secs: f32) -> Option<Active> {
+unsafe fn start_toast(
+    hwnd: HWND,
+    screen_dc: HDC,
+    spec: &ToastSpec,
+    corner: Corner,
+    secs: f32,
+    colors: &ToastColors,
+) -> Option<Active> {
     let (monitor, scale) = target_monitor();
     let w = (CARD_W * scale).round() as i32;
     let h = (CARD_H * scale).round() as i32;
@@ -204,22 +288,53 @@ unsafe fn start_toast(hwnd: HWND, screen_dc: HDC, spec: &ToastSpec, corner: Corn
     }
     let old_bitmap = SelectObject(mem_dc, bitmap);
     let pixels = std::slice::from_raw_parts_mut(bits as *mut u32, (w * h) as usize);
-    render(mem_dc, pixels, w, h, scale, spec);
+    render(mem_dc, pixels, w, h, scale, spec, colors);
 
     // Park the window (invisible until the first UpdateLayeredWindow tick) at its spot.
-    SetWindowPos(hwnd, HWND_TOPMOST, x, y, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
-    let dir_y = if matches!(corner, Corner::TopLeft | Corner::TopRight) { 1 } else { -1 };
-    Some(Active { started: Instant::now(), total: secs.max(1.0), x, y, dir_y, w, h, mem_dc, bitmap, old_bitmap })
+    SetWindowPos(
+        hwnd,
+        HWND_TOPMOST,
+        x,
+        y,
+        w,
+        h,
+        SWP_NOACTIVATE | SWP_SHOWWINDOW,
+    );
+    let dir_y = if matches!(corner, Corner::TopLeft | Corner::TopRight) {
+        1
+    } else {
+        -1
+    };
+    Some(Active {
+        started: Instant::now(),
+        total: secs.max(1.0),
+        x,
+        y,
+        dir_y,
+        w,
+        h,
+        mem_dc,
+        bitmap,
+        old_bitmap,
+    })
 }
 
 // ---------- software rendering ----------
 
 fn rgb(hex: u32) -> (f32, f32, f32) {
-    (((hex >> 16) & 0xff) as f32, ((hex >> 8) & 0xff) as f32, (hex & 0xff) as f32)
+    (
+        ((hex >> 16) & 0xff) as f32,
+        ((hex >> 8) & 0xff) as f32,
+        (hex & 0xff) as f32,
+    )
 }
 
 fn put(px: &mut u32, c: (f32, f32, f32), a: f32) {
-    let (r, g, b) = ((*px >> 16 & 0xff) as f32, (*px >> 8 & 0xff) as f32, (*px & 0xff) as f32);
+    let (r, g, b) = (
+        (*px >> 16 & 0xff) as f32,
+        (*px >> 8 & 0xff) as f32,
+        (*px & 0xff) as f32,
+    );
     let m = |d: f32, s: f32| (d + (s - d) * a).round().clamp(0.0, 255.0) as u32;
     *px = 0xff00_0000 | (m(r, c.0) << 16) | (m(g, c.1) << 8) | m(b, c.2);
 }
@@ -242,8 +357,14 @@ fn fill_circle(px: &mut [u32], w: i32, cx: f32, cy: f32, r: f32, c: (f32, f32, f
 
 fn stroke(px: &mut [u32], w: i32, a: (f32, f32), b: (f32, f32), t: f32, c: (f32, f32, f32)) {
     let pad = t + 2.0;
-    let (x0, x1) = ((a.0.min(b.0) - pad).max(0.0) as i32, (a.0.max(b.0) + pad) as i32);
-    let (y0, y1) = ((a.1.min(b.1) - pad).max(0.0) as i32, (a.1.max(b.1) + pad) as i32);
+    let (x0, x1) = (
+        (a.0.min(b.0) - pad).max(0.0) as i32,
+        (a.0.max(b.0) + pad) as i32,
+    );
+    let (y0, y1) = (
+        (a.1.min(b.1) - pad).max(0.0) as i32,
+        (a.1.max(b.1) + pad) as i32,
+    );
     let (dx, dy) = (b.0 - a.0, b.1 - a.1);
     let len2 = (dx * dx + dy * dy).max(1e-6);
     for y in y0..y1 {
@@ -262,42 +383,109 @@ fn stroke(px: &mut [u32], w: i32, a: (f32, f32), b: (f32, f32), t: f32, c: (f32,
 }
 
 #[allow(clippy::too_many_arguments)]
-unsafe fn text(dc: HDC, s: &str, x: i32, y: i32, w: i32, h: i32, px_height: i32, weight: i32, color: u32) {
+unsafe fn text(
+    dc: HDC,
+    s: &str,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    px_height: i32,
+    weight: i32,
+    color: u32,
+) {
     let face = wide("Segoe UI");
-    let font = CreateFontW(-px_height, 0, 0, 0, weight, 0, 0, 0, 1, 0, 0, CLEARTYPE_QUALITY as u32, 0, face.as_ptr());
+    let font = CreateFontW(
+        -px_height,
+        0,
+        0,
+        0,
+        weight,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        CLEARTYPE_QUALITY as u32,
+        0,
+        face.as_ptr(),
+    );
     let old = SelectObject(dc, font);
     SetBkMode(dc, TRANSPARENT as i32);
     // COLORREF is 0x00BBGGRR.
-    SetTextColor(dc, ((color & 0xff) << 16) | (color & 0xff00) | ((color >> 16) & 0xff));
-    let mut rc = RECT { left: x, top: y, right: x + w, bottom: y + h };
+    SetTextColor(
+        dc,
+        ((color & 0xff) << 16) | (color & 0xff00) | ((color >> 16) & 0xff),
+    );
+    let mut rc = RECT {
+        left: x,
+        top: y,
+        right: x + w,
+        bottom: y + h,
+    };
     let t = wide(s);
-    DrawTextW(dc, t.as_ptr(), -1, &mut rc, DT_LEFT | DT_TOP | DT_NOPREFIX | DT_SINGLELINE | DT_END_ELLIPSIS);
+    DrawTextW(
+        dc,
+        t.as_ptr(),
+        -1,
+        &mut rc,
+        DT_LEFT | DT_TOP | DT_NOPREFIX | DT_SINGLELINE | DT_END_ELLIPSIS,
+    );
     SelectObject(dc, old);
     DeleteObject(font);
 }
 
-unsafe fn render(dc: HDC, px: &mut [u32], w: i32, h: i32, s: f32, spec: &ToastSpec) {
-    const CARD: u32 = 0x1a1e28;
-    const BORDER: u32 = 0x343c4f;
-    let accent = match spec.kind {
-        ToastKind::Success => 0x4ad6a7,
-        ToastKind::Info => 0x7aa2ff,
-        ToastKind::Error => 0xff5d6c,
-    };
+unsafe fn render(
+    dc: HDC,
+    px: &mut [u32],
+    w: i32,
+    h: i32,
+    s: f32,
+    spec: &ToastSpec,
+    colors: &ToastColors,
+) {
+    let (card, border) = (colors.card, colors.border);
+    let accent = colors.accent(spec.kind);
     for p in px.iter_mut() {
-        *p = 0xff00_0000 | CARD;
+        *p = 0xff00_0000 | card;
     }
 
     // Icon badge: a tinted disc with a glyph.
     let (icx, icy, ir) = (30.0 * s, h as f32 / 2.0, 20.0 * s);
     let acc = rgb(accent);
-    let dark = rgb(CARD);
-    fill_circle(px, w, icx, icy, ir, (acc.0 * 0.22 + dark.0 * 0.78, acc.1 * 0.22 + dark.1 * 0.78, acc.2 * 0.22 + dark.2 * 0.78));
+    let dark = rgb(card);
+    fill_circle(
+        px,
+        w,
+        icx,
+        icy,
+        ir,
+        (
+            acc.0 * 0.22 + dark.0 * 0.78,
+            acc.1 * 0.22 + dark.1 * 0.78,
+            acc.2 * 0.22 + dark.2 * 0.78,
+        ),
+    );
     let th = 2.6 * s;
     match spec.kind {
         ToastKind::Success => {
-            stroke(px, w, (icx - 7.0 * s, icy + 0.5 * s), (icx - 2.0 * s, icy + 6.0 * s), th, acc);
-            stroke(px, w, (icx - 2.0 * s, icy + 6.0 * s), (icx + 8.0 * s, icy - 6.0 * s), th, acc);
+            stroke(
+                px,
+                w,
+                (icx - 7.0 * s, icy + 0.5 * s),
+                (icx - 2.0 * s, icy + 6.0 * s),
+                th,
+                acc,
+            );
+            stroke(
+                px,
+                w,
+                (icx - 2.0 * s, icy + 6.0 * s),
+                (icx + 8.0 * s, icy - 6.0 * s),
+                th,
+                acc,
+            );
         }
         ToastKind::Info => {
             fill_circle(px, w, icx, icy - 7.0 * s, 1.9 * s, acc);
@@ -312,21 +500,46 @@ unsafe fn render(dc: HDC, px: &mut [u32], w: i32, h: i32, s: f32, spec: &ToastSp
     // Text (GDI) — title and subtitle.
     let tx = (62.0 * s) as i32;
     let tw = w - tx - (16.0 * s) as i32;
-    text(dc, &spec.title, tx, (h as f32 * 0.5 - 24.0 * s) as i32, tw, (24.0 * s) as i32, (17.0 * s) as i32, 600, 0xe6e9f0);
+    text(
+        dc,
+        &spec.title,
+        tx,
+        (h as f32 * 0.5 - 24.0 * s) as i32,
+        tw,
+        (24.0 * s) as i32,
+        (17.0 * s) as i32,
+        600,
+        colors.title,
+    );
     if !spec.subtitle.is_empty() {
-        text(dc, &spec.subtitle, tx, (h as f32 * 0.5 + 2.0 * s) as i32, tw, (20.0 * s) as i32, (13.0 * s) as i32, 400, 0x8a93a6);
+        text(
+            dc,
+            &spec.subtitle,
+            tx,
+            (h as f32 * 0.5 + 2.0 * s) as i32,
+            tw,
+            (20.0 * s) as i32,
+            (13.0 * s) as i32,
+            400,
+            colors.subtitle,
+        );
     }
 
     // Rounded corners + 1px border, premultiplied alpha for UpdateLayeredWindow.
     let (fw, fh, fr) = (w as f32, h as f32, RADIUS * s);
-    let border = rgb(BORDER);
+    let border = rgb(border);
     for y in 0..h {
         for x in 0..w {
             let (cx, cy) = (x as f32 + 0.5, y as f32 + 0.5);
             let outer = rounded_rect_coverage(cx, cy, fw, fh, fr);
-            let inner = rounded_rect_coverage(cx - 1.0, cy - 1.0, fw - 2.0, fh - 2.0, (fr - 1.0).max(0.0));
+            let inner =
+                rounded_rect_coverage(cx - 1.0, cy - 1.0, fw - 2.0, fh - 2.0, (fr - 1.0).max(0.0));
             let p = &mut px[(y * w + x) as usize];
-            let (r, g, b) = ((*p >> 16 & 0xff) as f32, (*p >> 8 & 0xff) as f32, (*p & 0xff) as f32);
+            let (r, g, b) = (
+                (*p >> 16 & 0xff) as f32,
+                (*p >> 8 & 0xff) as f32,
+                (*p & 0xff) as f32,
+            );
             let mix = |c: f32, bd: f32| c * inner + bd * (1.0 - inner);
             let (r, g, b) = (mix(r, border.0), mix(g, border.1), mix(b, border.2));
             let a = outer;
