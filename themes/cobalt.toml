@@ -1,6 +1,6 @@
-name = "Galaxy One UI"
+name = "Cobalt"
 author = "Rewind"
-# Inspired by Samsung One UI: clean near-black with the One UI blue.
+# Clean near-black with a cobalt blue.
 
 [colors]
 nav = "#000000"

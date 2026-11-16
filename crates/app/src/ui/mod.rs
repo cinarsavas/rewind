@@ -1,5 +1,5 @@
 mod effects;
-mod i18n;
+pub(crate) mod i18n;
 mod theme;
 mod views;
 mod widgets;
@@ -62,6 +62,8 @@ pub enum Msg {
     Update(Result<Option<crate::updates::UpdateInfo>, String>),
     /// The update is downloaded and the installer is waiting for Rewind to quit.
     UpdateReady(Result<(), String>),
+    /// A smaller copy for sharing is ready (or failed).
+    Shared(Result<PathBuf, String>),
 }
 
 /// What the About page knows about newer releases.
@@ -173,6 +175,8 @@ pub struct RewindApp {
     pub clip_rows: Vec<ClipRow>,
     pub filter_idx: Vec<usize>,
     pub clip_filter: String,
+    /// Clips page shows only starred clips.
+    pub favorites_only: bool,
     clips_rev: u64,
     clip_rows_rev: u64,
     clip_rows_bucket: u64,
@@ -199,7 +203,9 @@ pub struct RewindApp {
     buffer_checked: Option<Instant>,
     /// Whether the voice runtime and the current language's model are on disk, re-checked
     /// every few seconds instead of hitting the filesystem every frame.
-    voice_files: Option<(String, bool, Instant)>,
+    voice_files: Option<(String, bool, bool, Instant)>,
+    /// Whether the running listener was started with the Whisper check.
+    voice_running_whisper: bool,
     quitting: bool,
     window_hidden: bool,
     focused: bool,
@@ -238,6 +244,8 @@ pub struct RewindApp {
     pub input_devices: Vec<crate::audio::AudioDevice>,
     pub update_state: UpdateState,
     update_auto_checked: bool,
+    /// Name of the clip a small copy is being made of, while it runs.
+    pub sharing: Option<String>,
     /// The last few error messages, newest last, for "Copy diagnostics".
     pub recent_errors: std::collections::VecDeque<(SystemTime, String)>,
 }
@@ -350,6 +358,7 @@ impl RewindApp {
             clip_rows: Vec::new(),
             filter_idx: Vec::new(),
             clip_filter: String::new(),
+            favorites_only: false,
             clips_rev: 0,
             clip_rows_rev: u64::MAX,
             clip_rows_bucket: u64::MAX,
@@ -371,6 +380,7 @@ impl RewindApp {
             buffer_on: false,
             buffer_checked: None,
             voice_files: None,
+            voice_running_whisper: false,
             quitting: false,
             window_hidden: hide_now,
             focused: !hide_now,
@@ -403,6 +413,7 @@ impl RewindApp {
             update_state: UpdateState::Idle,
             update_auto_checked: false,
             recent_errors: std::collections::VecDeque::new(),
+            sharing: None,
         }
     }
 
@@ -713,16 +724,25 @@ impl RewindApp {
             return;
         }
         let needle = self.clip_filter.trim().to_lowercase();
-        self.filter_idx = if needle.is_empty() {
-            (0..self.clip_rows.len()).collect()
-        } else {
-            self.clip_rows
-                .iter()
-                .enumerate()
-                .filter(|(_, r)| r.clip.name.to_lowercase().contains(&needle))
-                .map(|(i, _)| i)
-                .collect()
-        };
+        let favorites: Option<std::collections::HashSet<&str>> = self
+            .favorites_only
+            .then(|| self.cfg.favorites.iter().map(String::as_str).collect());
+        let root = self.cfg.output_dir.clone();
+        self.filter_idx = self
+            .clip_rows
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| {
+                (needle.is_empty()
+                    || r.clip.name.to_lowercase().contains(&needle)
+                    || r.clip.group.to_lowercase().contains(&needle))
+                    && favorites
+                        .as_ref()
+                        .map(|f| f.contains(library::relative_key(&root, &r.clip.path).as_str()))
+                        .unwrap_or(true)
+            })
+            .map(|(i, _)| i)
+            .collect();
         self.filter_dirty = false;
         self.filter_rev = self.clips_rev;
     }
@@ -736,15 +756,21 @@ impl RewindApp {
     /// True when the voice runtime and the configured model are installed. Cached for a few
     /// seconds; [`Self::invalidate_voice_files`] forces a fresh look after installs.
     fn voice_files_ready(&mut self) -> bool {
+        self.voice_files_cached().0
+    }
+
+    /// (voice runtime + model installed, Whisper add-on installed), cached for 3 seconds.
+    fn voice_files_cached(&mut self) -> (bool, bool) {
         let lang = &self.cfg.voice.language;
-        if let Some((cached_lang, ok, at)) = &self.voice_files {
+        if let Some((cached_lang, ok, whisper, at)) = &self.voice_files {
             if cached_lang == lang && at.elapsed() < Duration::from_secs(3) {
-                return *ok;
+                return (*ok, *whisper);
             }
         }
         let ok = self.packs.runtime_installed() && self.packs.model_installed(lang);
-        self.voice_files = Some((lang.clone(), ok, Instant::now()));
-        ok
+        let whisper = self.packs.whisper_installed();
+        self.voice_files = Some((lang.clone(), ok, whisper, Instant::now()));
+        (ok, whisper)
     }
 
     fn invalidate_voice_files(&mut self) {
@@ -780,7 +806,11 @@ impl RewindApp {
             }
             self.voice_retry_at = None;
         }
-        if self.voice.is_some() && self.voice_running_cfg.as_ref() == Some(&self.cfg.voice) {
+        let whisper = self.cfg.voice.use_whisper && self.voice_files_cached().1;
+        if self.voice.is_some()
+            && self.voice_running_cfg.as_ref() == Some(&self.cfg.voice)
+            && self.voice_running_whisper == whisper
+        {
             return;
         }
         self.voice = None;
@@ -789,9 +819,11 @@ impl RewindApp {
             &self.cfg.voice,
             self.packs.voice_runtime_dir(),
             self.packs.voice_model_dir(&self.cfg.voice.language),
+            whisper.then(|| self.packs.whisper_dir()),
             self.cfg.audio.mic_device.clone(),
             self.ctx.clone(),
         );
+        self.voice_running_whisper = whisper;
         self.voice = Some(handle);
         self.voice_running_cfg = Some(self.cfg.voice.clone());
         self.voice_retry_at = None;
@@ -803,7 +835,7 @@ impl RewindApp {
 
     /// In-app toast only.
     pub fn notify(&mut self, text: impl Into<String>, is_error: bool) {
-        let text = i18n::t(&text.into()).to_string();
+        let text = i18n::tp(&text.into());
         if is_error {
             if self.recent_errors.len() >= 20 {
                 self.recent_errors.pop_front();
@@ -950,7 +982,8 @@ impl RewindApp {
 
     /// In-app toast plus the over-the-game overlay (skipped while Rewind itself is focused).
     pub fn announce(&mut self, kind: ToastKind, title: &str, subtitle: &str) {
-        let (title, subtitle) = (i18n::t(title), i18n::t(subtitle));
+        let (title, subtitle) = (i18n::tp(title), i18n::tp(subtitle));
+        let (title, subtitle) = (title.as_str(), subtitle.as_str());
         self.notify(
             if subtitle.is_empty() {
                 title.to_string()
@@ -967,8 +1000,8 @@ impl RewindApp {
             self.overlay.show(
                 ToastSpec {
                     kind,
-                    title: i18n::t(title).to_string(),
-                    subtitle: i18n::t(subtitle).to_string(),
+                    title: i18n::tp(title),
+                    subtitle: i18n::tp(subtitle),
                 },
                 self.cfg.overlay_corner,
                 self.cfg.overlay_secs,
@@ -1081,12 +1114,127 @@ impl RewindApp {
             return;
         };
         self.saving = true;
+        // Note what's in front now, while the game still is (the save takes a moment).
+        let game = if self.cfg.per_game_folders {
+            platform::foreground_app_name().and_then(|n| library::game_folder_name(&n))
+        } else {
+            None
+        };
+        let root = self.cfg.output_dir.clone();
         let tx = self.tx.clone();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
-            let _ = tx.send(Msg::Saved(saver.save()));
+            let result = saver
+                .save()
+                .map(|path| move_to_game_folder(&root, path, game.as_deref()));
+            let _ = tx.send(Msg::Saved(result));
             ctx.request_repaint();
         });
+    }
+
+    /// Put the clip file on the clipboard.
+    pub fn share_copy(&mut self, clip: &Clip) {
+        match crate::share::copy_file(&clip.path) {
+            Ok(()) => self.notify(
+                i18n::t("Clip copied. Paste it into Discord, WhatsApp or a folder."),
+                false,
+            ),
+            Err(e) => self.notify(i18n::tf("Couldn't copy: {e}", &[("e", &e)]), true),
+        }
+    }
+
+    /// Make a small (under 10 MB) 720p copy in the background, then put it on the clipboard.
+    pub fn share_small(&mut self, clip: &Clip) {
+        if self.sharing.is_some() {
+            return;
+        }
+        let Some(ffmpeg) = self.ffmpeg.clone() else {
+            self.notify(
+                i18n::t("Needs ffmpeg: install Clip previews from Add-ons."),
+                true,
+            );
+            return;
+        };
+        self.sharing = Some(clip.name.clone());
+        self.notify(i18n::t("Making a smaller copy…"), false);
+        let (tx, ctx, src) = (self.tx.clone(), self.ctx.clone(), clip.path.clone());
+        std::thread::Builder::new()
+            .name("rewind-share".into())
+            .spawn(move || {
+                let _ = tx.send(Msg::Shared(crate::share::make_small_copy(&ffmpeg, &src)));
+                ctx.request_repaint();
+            })
+            .ok();
+    }
+
+    /// Whether a clip is starred.
+    pub fn is_favorite(&self, clip: &Clip) -> bool {
+        let key = library::relative_key(&self.cfg.output_dir, &clip.path);
+        self.cfg.favorites.iter().any(|f| *f == key)
+    }
+
+    /// Star or unstar a clip. Saved right away; no Apply needed.
+    pub fn toggle_favorite(&mut self, clip: &Clip) {
+        let key = library::relative_key(&self.cfg.output_dir, &clip.path);
+        if let Some(i) = self.cfg.favorites.iter().position(|f| *f == key) {
+            self.cfg.favorites.remove(i);
+        } else {
+            self.cfg.favorites.push(key);
+        }
+        self.draft.favorites = self.cfg.favorites.clone();
+        self.save_quietly();
+        self.filter_dirty = true;
+    }
+
+    /// Keep a favourite when its file is renamed or deleted.
+    pub fn favorite_moved(&mut self, from: &std::path::Path, to: Option<&std::path::Path>) {
+        let old = library::relative_key(&self.cfg.output_dir, from);
+        let Some(i) = self.cfg.favorites.iter().position(|f| *f == old) else {
+            return;
+        };
+        match to {
+            Some(to) => {
+                self.cfg.favorites[i] = library::relative_key(&self.cfg.output_dir, to);
+            }
+            None => {
+                self.cfg.favorites.remove(i);
+            }
+        }
+        self.draft.favorites = self.cfg.favorites.clone();
+        self.save_quietly();
+    }
+
+    /// Delete the oldest clips (never favourites) until the folder fits the storage limit.
+    fn enforce_storage_limit(&mut self) {
+        if self.cfg.storage_limit_gb == 0 {
+            return;
+        }
+        let limit = self.cfg.storage_limit_gb as u64 * 1_000_000_000;
+        let doomed: Vec<std::path::PathBuf> =
+            library::over_limit(&self.clips, limit, |c| self.is_favorite(c))
+                .into_iter()
+                .map(|c| c.path.clone())
+                .collect();
+        if doomed.is_empty() {
+            return;
+        }
+        let removed = doomed
+            .iter()
+            .filter(|p| std::fs::remove_file(p).is_ok())
+            .count();
+        if removed > 0 {
+            self.notify(
+                i18n::tf(
+                    "Removed {n} old clips to stay under {gb} GB",
+                    &[
+                        ("n", &removed.to_string()),
+                        ("gb", &self.cfg.storage_limit_gb.to_string()),
+                    ],
+                ),
+                false,
+            );
+            self.refresh_clips(true);
+        }
     }
 
     /// Apply edited settings: persist, rebuild what changed, re-register hotkeys.
@@ -1126,8 +1274,14 @@ impl RewindApp {
             }
         }
         self.refresh_buffer_state(true);
+        let language_changed = next.language != self.cfg.language;
         self.cfg = next;
         i18n::set_lang(self.cfg.language);
+        if language_changed {
+            if let Some(tray) = &mut self.tray {
+                tray.retranslate();
+            }
+        }
         self.invalidate_voice_files();
         self.draft = self.cfg.clone();
         if let Err(e) = self.cfg.save_to(&self.cfg_path) {
@@ -1195,6 +1349,8 @@ impl RewindApp {
         self.scan_inflight = false;
         if std::mem::take(&mut self.scan_again) {
             self.refresh_clips(true);
+        } else if changed {
+            self.enforce_storage_limit();
         }
     }
 
@@ -1314,6 +1470,19 @@ impl RewindApp {
                         None => UpdateState::Failed(e),
                     };
                 }
+                Msg::Shared(result) => {
+                    self.sharing = None;
+                    match result.and_then(|p| crate::share::copy_file(&p).map(|_| p)) {
+                        Ok(_) => self.notify(
+                            i18n::t("Small copy ready (under 10 MB). Paste it into Discord."),
+                            false,
+                        ),
+                        Err(e) => self.notify(
+                            i18n::tf("Couldn't make a small copy: {e}", &[("e", &e)]),
+                            true,
+                        ),
+                    }
+                }
                 Msg::Update(Ok(None)) => self.update_state = UpdateState::UpToDate,
                 Msg::Update(Err(e)) => self.update_state = UpdateState::Failed(e),
             }
@@ -1386,6 +1555,38 @@ impl RewindApp {
             );
         }
     }
+}
+
+/// Move a just-saved clip into `root/<game>/`. Any problem leaves it where it is.
+fn move_to_game_folder(root: &std::path::Path, path: PathBuf, game: Option<&str>) -> PathBuf {
+    let Some(game) = game else { return path };
+    let dir = root.join(game);
+    if std::fs::create_dir_all(&dir).is_err() {
+        return path;
+    }
+    let Some(name) = path.file_name() else {
+        return path;
+    };
+    let mut target = dir.join(name);
+    if target.exists() {
+        let stem = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "clip".into());
+        let ext = path
+            .extension()
+            .map(|e| e.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "mp4".into());
+        target = library::unique_path(&dir, &stem, &ext);
+    }
+    // OBS may still hold the file for a moment after reporting it saved.
+    for _ in 0..10 {
+        if std::fs::rename(&path, &target).is_ok() {
+            return target;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    path
 }
 
 /// Custom clip-saved sounds (.mp3 / .wav).

@@ -27,6 +27,9 @@ pub enum Icon {
     Check,
     Warning,
     Copy,
+    Star,
+    StarFilled,
+    More,
 }
 
 pub fn paint_icon(p: &egui::Painter, icon: Icon, c: Pos2, size: f32, color: Color32) {
@@ -196,6 +199,33 @@ pub fn paint_icon(p: &egui::Painter, icon: Icon, c: Pos2, size: f32, color: Colo
                 ],
                 st,
             );
+        }
+        Icon::Star | Icon::StarFilled => {
+            // Five-pointed star: outer points every 72°, inner points halfway between.
+            let pts: Vec<Pos2> = (0..10)
+                .map(|i| {
+                    let r = if i % 2 == 0 { s * 0.95 } else { s * 0.42 };
+                    let a = -PI / 2.0 + i as f32 * PI / 5.0;
+                    pos2(c.x + r * a.cos(), c.y + r * a.sin())
+                })
+                .collect();
+            if icon == Icon::StarFilled {
+                // Fill as triangles from the centre (the shape isn't convex).
+                for i in 0..10 {
+                    p.add(Shape::convex_polygon(
+                        vec![c, pts[i], pts[(i + 1) % 10]],
+                        color,
+                        Stroke::NONE,
+                    ));
+                }
+            } else {
+                p.add(Shape::closed_line(pts, st));
+            }
+        }
+        Icon::More => {
+            for dx in [-0.55f32, 0.0, 0.55] {
+                p.circle_filled(pos2(c.x + dx * s, c.y), (size / 10.0).max(1.6), color);
+            }
         }
         Icon::Copy => {
             // Two overlapping sheets.
@@ -544,7 +574,11 @@ pub fn setting_row(
 ) {
     ui.horizontal(|ui| {
         ui.set_min_height(48.0);
+        // Keep the text to about 60% of the row so a long hint wraps onto a second line
+        // instead of squeezing the control (text boxes, sliders) on the right.
+        let text_width = (ui.available_width() * 0.6).max(220.0);
         ui.vertical(|ui| {
+            ui.set_max_width(text_width);
             ui.spacing_mut().item_spacing.y = 2.0;
             // Centre title-only rows against their control.
             ui.add_space(if hint.is_empty() { 13.0 } else { 5.0 });

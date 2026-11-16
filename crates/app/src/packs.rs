@@ -32,6 +32,7 @@ pub fn repo() -> String {
 
 pub const KEY_RUNTIME: &str = "voice-runtime";
 pub const KEY_PREVIEW: &str = "preview";
+pub const KEY_WHISPER: &str = "voice-whisper";
 
 /// Vosk models come in two layouts: the current one with `am/`, `conf/` and `graph/`
 /// folders, and the older flat one used by the small Turkish model (`final.mdl`,
@@ -194,6 +195,36 @@ impl PackManager {
 
     pub fn remove_preview(&mut self) {
         let _ = fs::remove_dir_all(self.preview_dir());
+    }
+
+    pub fn whisper_dir(&self) -> PathBuf {
+        self.root.join(KEY_WHISPER)
+    }
+
+    pub fn whisper_installed(&self) -> bool {
+        crate::whisper::is_installed(&self.whisper_dir())
+    }
+
+    pub fn install_whisper(&mut self) {
+        let Some(file) = self.index.as_ref().and_then(|i| i.whisper.clone()) else {
+            return;
+        };
+        let (root, dest) = (self.root.clone(), self.whisper_dir());
+        self.spawn_job(KEY_WHISPER, move |p| {
+            install_zip(
+                &root,
+                "voice-whisper.zip",
+                &file.url,
+                &file.sha256,
+                &dest,
+                &p,
+                crate::whisper::is_installed,
+            )
+        });
+    }
+
+    pub fn remove_whisper(&mut self) {
+        let _ = fs::remove_dir_all(self.whisper_dir());
     }
 
     pub fn runtime_installed(&self) -> bool {

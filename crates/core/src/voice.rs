@@ -311,6 +311,24 @@ impl PhraseMatcher {
         Verdict::Match
     }
 
+    /// Worth a second opinion: a short utterance that shares at least half the words of a
+    /// trigger phrase (for "klip al": "klip", "al", "kilit al" …). Used to decide when to ask
+    /// the heavier Whisper add-on.
+    pub fn might_be(&self, recognised: &str) -> bool {
+        let norm = normalize(recognised);
+        let heard: Vec<&str> = norm
+            .split(' ')
+            .filter(|w| !w.is_empty() && *w != "unk")
+            .collect();
+        if heard.is_empty() {
+            return false;
+        }
+        self.alternatives.iter().any(|words| {
+            let shared = words.iter().filter(|w| heard.contains(&w.as_str())).count();
+            heard.len() <= words.len() + 3 && shared * 2 >= words.len()
+        })
+    }
+
     /// Looser check: the phrase anywhere in `recognised`, with the cool-down.
     pub fn matches(&mut self, recognised: &str, now_ms: u64) -> bool {
         if self.words.is_empty() {
@@ -590,6 +608,15 @@ mod tests {
             grammar_json("klip al, klibi al", true),
             "[\"klip al\",\"klibi al\",\"[unk]\"]"
         );
+    }
+
+    #[test]
+    fn might_be_picks_short_phrase_like_utterances() {
+        let m = PhraseMatcher::new("klip al", 0);
+        assert!(m.might_be("kilit al"));
+        assert!(m.might_be("klip"));
+        assert!(!m.might_be("bir iki üç dört beş altı al"));
+        assert!(!m.might_be("tamam abi"));
     }
 
     #[test]

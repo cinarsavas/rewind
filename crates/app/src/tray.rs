@@ -4,6 +4,8 @@
 use std::sync::mpsc::{channel, Receiver};
 
 use eframe::egui;
+
+use crate::ui::i18n::t;
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
@@ -19,6 +21,8 @@ pub enum TrayAction {
 pub struct Tray {
     icon: TrayIcon,
     toggle: CheckMenuItem,
+    /// Kept so the menu can follow a language change without a restart.
+    labels: Vec<(MenuItem, &'static str)>,
     rx: Receiver<TrayAction>,
     last_on: bool,
 }
@@ -46,11 +50,11 @@ fn make_icon() -> Option<Icon> {
 
 impl Tray {
     pub fn new(ctx: egui::Context, buffer_on: bool) -> Result<Tray, String> {
-        let open = MenuItem::new("Open Rewind", true, None);
-        let save = MenuItem::new("Save replay now", true, None);
-        let toggle = CheckMenuItem::new("Instant Replay on", true, buffer_on, None);
-        let folder = MenuItem::new("Open clips folder", true, None);
-        let quit = MenuItem::new("Quit Rewind", true, None);
+        let open = MenuItem::new(t("Open Rewind"), true, None);
+        let save = MenuItem::new(t("Save replay now"), true, None);
+        let toggle = CheckMenuItem::new(t("Instant Replay on"), true, buffer_on, None);
+        let folder = MenuItem::new(t("Open clips folder"), true, None);
+        let quit = MenuItem::new(t("Quit Rewind"), true, None);
         let menu = Menu::new();
         menu.append_items(&[
             &open,
@@ -116,9 +120,16 @@ impl Tray {
             builder = builder.with_icon(icon);
         }
         let icon = builder.build().map_err(|e| format!("tray icon: {e}"))?;
+        let labels = vec![
+            (open.clone(), "Open Rewind"),
+            (save.clone(), "Save replay now"),
+            (folder.clone(), "Open clips folder"),
+            (quit.clone(), "Quit Rewind"),
+        ];
         Ok(Tray {
             icon,
             toggle,
+            labels,
             rx,
             last_on: buffer_on,
         })
@@ -142,9 +153,20 @@ impl Tray {
 }
 
 fn tooltip(on: bool) -> &'static str {
-    if on {
+    t(if on {
         "Rewind — Instant Replay is on"
     } else {
         "Rewind — Instant Replay is off"
+    })
+}
+
+impl Tray {
+    /// Re-label the menu after the interface language changed.
+    pub fn retranslate(&mut self) {
+        for (item, english) in &self.labels {
+            item.set_text(t(english));
+        }
+        self.toggle.set_text(t("Instant Replay on"));
+        let _ = self.icon.set_tooltip(Some(tooltip(self.last_on)));
     }
 }

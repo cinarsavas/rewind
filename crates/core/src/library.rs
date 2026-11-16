@@ -71,6 +71,50 @@ pub fn scan(dir: &Path) -> Vec<Clip> {
     clips
 }
 
+/// Path of a clip relative to the clips folder, with forward slashes ("Game/clip.mp4").
+/// Used to remember favourites independently of where the clips folder lives.
+pub fn relative_key(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Clips to delete so the library fits in `limit_bytes`: oldest first, never favourites.
+pub fn over_limit<'a>(
+    clips: &'a [Clip],
+    limit_bytes: u64,
+    is_favorite: impl Fn(&Clip) -> bool,
+) -> Vec<&'a Clip> {
+    let mut total: u64 = clips.iter().map(|c| c.size_bytes).sum();
+    if total <= limit_bytes {
+        return Vec::new();
+    }
+    let mut oldest: Vec<&Clip> = clips.iter().filter(|c| !is_favorite(c)).collect();
+    oldest.sort_by_key(|c| c.modified);
+    let mut out = Vec::new();
+    for c in oldest {
+        if total <= limit_bytes {
+            break;
+        }
+        total = total.saturating_sub(c.size_bytes);
+        out.push(c);
+    }
+    out
+}
+
+/// A folder name for a game: Windows-safe, short, and never empty.
+pub fn game_folder_name(raw: &str) -> Option<String> {
+    let trimmed: String = raw.trim().chars().take(48).collect();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let name = sanitize_file_name(&trimmed);
+    (!name.is_empty() && name != "clip").then_some(name)
+}
+
 pub fn human_size(bytes: u64) -> String {
     const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
     let mut v = bytes as f64;
@@ -132,6 +176,33 @@ pub fn unique_path(dir: &Path, stem: &str, ext: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn storage_limit_keeps_favourites_and_newest() {
+        let t = |s| SystemTime::UNIX_EPOCH + Duration::from_secs(s);
+        let clip = |n: &str, secs, mb: u64| Clip {
+            path: PathBuf::from(n),
+            name: n.into(),
+            group: String::new(),
+            size_bytes: mb * 1_000_000,
+            modified: t(secs),
+        };
+        let clips = vec![clip("a", 1, 400), clip("b", 2, 400), clip("c", 3, 400)];
+        let gone = over_limit(&clips, 900_000_000, |c| c.name == "a");
+        assert_eq!(gone.len(), 1);
+        assert_eq!(gone[0].name, "b");
+        assert!(over_limit(&clips, 2_000_000_000, |_| false).is_empty());
+        assert_eq!(
+            relative_key(Path::new("/c"), Path::new("/c/Game/x.mp4")),
+            "Game/x.mp4"
+        );
+        assert_eq!(
+            game_folder_name("  VALORANT  ").as_deref(),
+            Some("VALORANT")
+        );
+        assert_eq!(game_folder_name("a:b"), Some("a_b".into()));
+        assert_eq!(game_folder_name("   "), None);
+    }
 
     fn tmp(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("rewind-lib-{tag}-{}", std::process::id()));

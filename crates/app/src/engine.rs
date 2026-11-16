@@ -403,10 +403,10 @@ impl Engine {
                         "This PC has no hardware video encoder, so Rewind records H.264 on the CPU. That is expected on older laptops and still looks good. If it feels heavy, the Low-end preset keeps it light.".into()
                     });
                 } else {
-                    self.notes.push(format!(
-                        "{} hardware encoding isn't available on this PC, so Rewind is recording H.264 on the CPU instead. The clips play everywhere and still look good.",
-                        cfg.codec.label()
-                    ));
+                    self.notes.push(
+                        "Hardware encoding for this codec isn't available on this PC, so Rewind is recording H.264 on the CPU instead. The clips play everywhere and still look good."
+                            .into(),
+                    );
                 }
                 Ok(replay)
             }

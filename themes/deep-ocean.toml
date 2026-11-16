@@ -1,6 +1,6 @@
-name = "iOS 16 Ocean"
+name = "Deep Ocean"
 author = "Rewind"
-# Inspired by the iOS 16 blue wallpaper: navy depth with a bright sky-blue accent.
+# Navy depth with a bright sky-blue accent.
 
 [colors]
 nav = "#06101f"

@@ -51,6 +51,8 @@ pub struct Heard {
     pub text: String,
     pub conf: Option<f32>,
     pub verdict: Verdict,
+    /// The Whisper add-on made the final decision.
+    pub by_whisper: bool,
 }
 
 pub struct VoiceShared {
@@ -196,6 +198,82 @@ fn short_path(path: &Path) -> PathBuf {
     PathBuf::from(std::ffi::OsString::from_wide(&buf[..n as usize]))
 }
 
+/// A sentence Vosk thought might be the trigger, for Whisper to judge.
+struct WhisperJob {
+    audio: Vec<i16>,
+    vosk_verdict: Verdict,
+    vosk_text: String,
+    vosk_conf: Option<f32>,
+}
+
+/// Start the Whisper worker for this listener. It owns the Whisper server, which stops when
+/// the listener does (the job channel closes).
+fn spawn_whisper_checker(
+    dir: &Path,
+    cfg: &VoiceConfig,
+    sh: &Arc<VoiceShared>,
+    tx: &std::sync::mpsc::Sender<()>,
+    ctx: &egui::Context,
+) -> std::sync::mpsc::Sender<WhisperJob> {
+    let (job_tx, jobs) = channel::<WhisperJob>();
+    let lang = if Lang::from_id(&cfg.language) == Lang::Turkish {
+        "tr"
+    } else {
+        "en"
+    };
+    let dir = dir.to_path_buf();
+    let mut matcher = PhraseMatcher::new(&cfg.phrase, 3_000)
+        // Whisper writes whole sentences with punctuation; allow one more word than Vosk.
+        .with_slack(cfg.strictness.slack() + 1);
+    let (sh, tx, ctx) = (sh.clone(), tx.clone(), ctx.clone());
+    std::thread::Builder::new()
+        .name("rewind-whisper".into())
+        .spawn(move || {
+            let mut whisper = crate::whisper::Whisper::start(&dir, lang).ok();
+            let started = Instant::now();
+            while let Ok(mut job) = jobs.recv() {
+                while let Ok(newer) = jobs.try_recv() {
+                    job = newer;
+                }
+                let heard = match whisper.as_mut().map(|w| w.transcribe(&job.audio)) {
+                    Some(Ok(text)) => {
+                        let verdict =
+                            matcher.judge(&text, None, 0.0, started.elapsed().as_millis() as u64);
+                        if verdict == Verdict::Match {
+                            let _ = tx.send(());
+                        }
+                        Heard {
+                            text,
+                            conf: None,
+                            verdict,
+                            by_whisper: true,
+                        }
+                    }
+                    // Whisper missing or failing: fall back to what Vosk decided.
+                    _ => {
+                        if job.vosk_verdict == Verdict::Match {
+                            let _ = tx.send(());
+                        }
+                        Heard {
+                            text: job.vosk_text,
+                            conf: job.vosk_conf,
+                            verdict: job.vosk_verdict,
+                            by_whisper: false,
+                        }
+                    }
+                };
+                if heard.verdict != Verdict::Nothing {
+                    if let Ok(mut h) = sh.heard.lock() {
+                        *h = Some(heard);
+                    }
+                }
+                ctx.request_repaint();
+            }
+        })
+        .ok();
+    job_tx
+}
+
 /// Open the configured microphone, or the Windows default when `device_id` is empty.
 fn open_capture_device(
     enumerator: &DeviceEnumerator,
@@ -227,6 +305,7 @@ pub fn start(
     cfg: &VoiceConfig,
     runtime_dir: PathBuf,
     model_dir: PathBuf,
+    whisper_dir: Option<PathBuf>,
     device_id: String,
     ctx: egui::Context,
 ) -> VoiceHandle {
@@ -241,7 +320,16 @@ pub fn start(
     std::thread::Builder::new()
         .name("rewind-voice".into())
         .spawn(move || {
-            let result = run(&cfg, &runtime_dir, &model_dir, &device_id, &sh, &tx, &ctx);
+            let result = run(
+                &cfg,
+                &runtime_dir,
+                &model_dir,
+                whisper_dir.as_deref(),
+                &device_id,
+                &sh,
+                &tx,
+                &ctx,
+            );
             // `run` may already have replaced the status with a phrase warning, which is
             // more useful than "Stopped" and must not trigger the automatic retry loop.
             if !matches!(sh.status(), VoiceStatus::Phrase(_)) {
@@ -259,10 +347,12 @@ pub fn start(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run(
     cfg: &VoiceConfig,
     runtime_dir: &Path,
     model_dir: &Path,
+    whisper_dir: Option<&Path>,
     device_id: &str,
     sh: &Arc<VoiceShared>,
     tx: &std::sync::mpsc::Sender<()>,
@@ -357,7 +447,7 @@ fn run(
     }
     let mut listen_cfg = cfg.clone();
     listen_cfg.phrase = usable_phrase;
-    let outcome = listen(&vosk, rec, &listen_cfg, device_id, sh, tx, ctx);
+    let outcome = listen(&vosk, rec, &listen_cfg, whisper_dir, device_id, sh, tx, ctx);
     unsafe {
         (vosk.rec_free)(rec);
         (vosk.model_free)(model);
@@ -365,10 +455,12 @@ fn run(
     outcome
 }
 
+#[allow(clippy::too_many_arguments)]
 fn listen(
     vosk: &Vosk,
     rec: *mut c_void,
     cfg: &VoiceConfig,
+    whisper_dir: Option<&Path>,
     device_id: &str,
     sh: &Arc<VoiceShared>,
     tx: &std::sync::mpsc::Sender<()>,
@@ -412,6 +504,12 @@ fn listen(
     sh.set_status(VoiceStatus::Listening);
     ctx.request_repaint();
 
+    // With the Whisper add-on, Vosk only nominates; Whisper makes the call.
+    let checker = whisper_dir.map(|dir| spawn_whisper_checker(dir, cfg, sh, tx, ctx));
+    // The current sentence, for Whisper, and the most promising thing Vosk made of it.
+    let mut utterance: Vec<i16> = Vec::new();
+    let mut best: Option<(Verdict, String, Option<f32>)> = None;
+
     let mut gate = VoiceGate::new(SAMPLE_RATE as u32, cfg.sensitivity);
     let mut matcher = PhraseMatcher::new(&cfg.phrase, 3_000).with_slack(cfg.strictness.slack());
     let min_conf = cfg.strictness.min_confidence();
@@ -440,6 +538,7 @@ fn listen(
                 .store(gate.level().to_bits(), Ordering::Relaxed);
             // Only finished utterances count. Partial results are the recogniser's running
             // guess and were the main source of clips nobody asked for.
+            let whisper_on = checker.is_some();
             let mut check = |json: String| {
                 if let Some(r) = parse_result(&json) {
                     let verdict = matcher.judge(
@@ -448,7 +547,31 @@ fn listen(
                         min_conf,
                         started.elapsed().as_millis() as u64,
                     );
-                    if verdict == Verdict::Match {
+                    if whisper_on {
+                        // Remember the most trigger-like result of this sentence; Whisper
+                        // decides once the sentence ends.
+                        let worth = verdict == Verdict::Match
+                            || verdict == Verdict::Unsure
+                            || verdict == Verdict::NotAlone
+                            || matcher.might_be(&r.text);
+                        let rank = |v: Verdict| match v {
+                            Verdict::Match => 3,
+                            Verdict::Unsure => 2,
+                            Verdict::NotAlone => 1,
+                            _ => 0,
+                        };
+                        if worth
+                            && best
+                                .as_ref()
+                                .map(|(v, _, _)| rank(verdict) >= rank(*v))
+                                .unwrap_or(true)
+                        {
+                            best = Some((verdict, r.text.clone(), r.min_conf));
+                        }
+                        if worth {
+                            return;
+                        }
+                    } else if verdict == Verdict::Match {
                         let _ = tx.send(());
                     }
                     if verdict != Verdict::Nothing {
@@ -459,6 +582,7 @@ fn listen(
                                 text: r.text.clone(),
                                 conf: r.min_conf,
                                 verdict,
+                                by_whisper: false,
                             });
                         }
                         ctx.request_repaint();
@@ -467,6 +591,14 @@ fn listen(
             };
             if let Some(mut audio) = audio {
                 cleaner.process(&mut audio);
+                if whisper_on {
+                    utterance.extend_from_slice(&audio);
+                    // Keep at most the last 8 seconds; triggers are short.
+                    let max = SAMPLE_RATE * 8;
+                    if utterance.len() > max {
+                        utterance.drain(..utterance.len() - max);
+                    }
+                }
                 let accepted = unsafe { (vosk.accept)(rec, audio.as_ptr(), audio.len() as c_int) };
                 if accepted == 1 {
                     check(unsafe { c_str((vosk.result)(rec)) });
@@ -479,6 +611,15 @@ fn listen(
                     check(unsafe { c_str(final_result(rec)) });
                 }
                 unsafe { (vosk.reset)(rec) };
+                if let (Some(tx_job), Some((verdict, text, conf))) = (&checker, best.take()) {
+                    let _ = tx_job.send(WhisperJob {
+                        audio: std::mem::take(&mut utterance),
+                        vosk_verdict: verdict,
+                        vosk_text: text,
+                        vosk_conf: conf,
+                    });
+                }
+                utterance.clear();
             }
             was_open = gate.is_open();
         }

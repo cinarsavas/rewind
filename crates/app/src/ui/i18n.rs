@@ -373,6 +373,81 @@ pub fn t(s: &str) -> &str {
         }
         "Clip deleted" => "Klip silindi",
         "Update now" => "Şimdi güncelle",
+        "Couldn't save replay — {e}" => "Tekrar kaydedilemedi — {e}",
+        "Capture" => "Yakalama",
+        "DXGI screen capture wasn't available on this PC, so Rewind switched to Windows Graphics Capture. On Windows 10 that may draw a yellow border around the screen." => "Bu bilgisayarda DXGI ekran yakalama kullanılamadı, bu yüzden Rewind Windows Graphics Capture'a geçti. Windows 10'da bu, ekranın çevresinde sarı bir çerçeve gösterebilir.",
+        "This PC has no hardware video encoder, so Rewind records H.264 on the CPU. That is expected on older laptops and still looks good. If it feels heavy, the Low-end preset keeps it light." => "Bu bilgisayarda donanımsal video kodlayıcı yok, bu yüzden Rewind H.264'ü işlemcide kaydediyor. Eski dizüstülerde bu normaldir ve görüntü yine iyidir. Ağır gelirse Düşük seviye PC ön ayarı yükü hafifletir.",
+        "This PC has no hardware video encoder, so Rewind records H.264 on the CPU. That is expected on older laptops, and the Low-end preset is already keeping it light." => "Bu bilgisayarda donanımsal video kodlayıcı yok, bu yüzden Rewind H.264'ü işlemcide kaydediyor. Eski dizüstülerde bu normaldir ve Düşük seviye PC ön ayarı yükü zaten hafif tutuyor.",
+        "Hardware encoding for this codec isn't available on this PC, so Rewind is recording H.264 on the CPU instead. The clips play everywhere and still look good." => "Bu kodek için donanımsal kodlama bu bilgisayarda yok, bu yüzden Rewind bunun yerine H.264'ü işlemcide kaydediyor. Klipler her yerde oynar ve yine iyi görünür.",
+        "OBS didn't finish writing the clip. The replay buffer is still on; try again in a moment. If it keeps happening, check that the clip folder is writable." => "OBS klibi yazmayı bitiremedi. Tekrar tamponu hâlâ açık; birazdan tekrar dene. Sürekli oluyorsa klip klasörünün yazılabilir olduğunu kontrol et.",
+        "replay buffer is off — turn it on first" => "tekrar tamponu kapalı — önce aç",
+        "replay buffer not created" => "tekrar tamponu oluşturulmadı",
+        "no monitors found" => "ekran bulunamadı",
+        "couldn't start screen capture" => "ekran yakalama başlatılamadı",
+        "no microphone found" => "mikrofon bulunamadı",
+        "the voice add-on isn't installed" => "ses eklentisi kurulu değil",
+        "couldn't load the language model (re-download it from Add-ons)" => "dil modeli yüklenemedi (Eklentiler'den yeniden indir)",
+        "the trigger phrase is empty" => "tetikleyici cümle boş",
+        "couldn't start the recogniser" => "tanıyıcı başlatılamadı",
+        "no response from the server (are you online?)" => "sunucudan yanıt yok (internete bağlı mısın?)",
+        "the connection dropped" => "bağlantı koptu",
+        "checksum mismatch: the download is corrupted or has been tampered with" => "sağlama toplamı uyuşmuyor: indirilen dosya bozuk ya da değiştirilmiş",
+        "missing checksum, refusing to download" => "sağlama toplamı yok, indirme reddedildi",
+        "file is larger than allowed" => "dosya izin verilenden büyük",
+        "this release has no checksum list" => "bu sürümde sağlama toplamı listesi yok",
+        "this release doesn't have a file for this kind of install" => "bu sürümde bu kurulum türü için dosya yok",
+        "the latest release has no version tag" => "son sürümün sürüm etiketi yok",
+        "only .mp3 and .wav files can be used" => "sadece .mp3 ve .wav dosyaları kullanılabilir",
+        "that file is over 10 MB; pick a short sound" => "dosya 10 MB'tan büyük; kısa bir ses seç",
+        "you already have 5 sounds; remove one, or turn off the limit in Add-ons" => "zaten 5 sesin var; birini kaldır ya da Eklentiler'den sınırı kapat",
+        "the clipboard is busy, try again" => "pano meşgul, tekrar dene",
+        "couldn't put the file on the clipboard" => "dosya panoya konamadı",
+        "the clip is too short" => "klip çok kısa",
+        "interrupted" => "yarıda kesildi",
+        "Open Rewind" => "Rewind'ı aç",
+        "Save replay now" => "Tekrarı şimdi kaydet",
+        "Quit Rewind" => "Rewind'dan çık",
+        "Rewind — Instant Replay is on" => "Rewind — Anlık tekrar açık",
+        "Rewind — Instant Replay is off" => "Rewind — Anlık tekrar kapalı",
+        "{n} effects · Installed" => "{n} efekt · Kurulu",
+        "{n} effects · by {author}" => "{n} efekt · {author} tarafından",
+        "· made by pro82xw" => "· pro82xw tarafından yapıldı",
+        "Whisper isn't answering" => "Whisper yanıt vermiyor",
+        "the Whisper model is missing" => "Whisper modeli eksik",
+        "Desktop audio unavailable: {e}" => "Masaüstü sesi kullanılamıyor: {e}",
+        "Microphone unavailable: {e}" => "Mikrofon kullanılamıyor: {e}",
+        "Game capture unavailable ({e}); recording the monitor only." => "Oyun yakalama kullanılamıyor ({e}); sadece ekran kaydediliyor.",
+        "{h} couldn't be registered ({e}). Another app may be using it." => "{h} kaydedilemedi ({e}). Başka bir uygulama kullanıyor olabilir.",
+        "Show only starred clips" => "Sadece yıldızlı klipleri göster",
+        "No starred clips" => "Yıldızlı klip yok",
+        "Star a clip to keep it here. Starred clips are never auto-deleted." => {
+            "Burada tutmak için bir klibe yıldız ver. Yıldızlı klipler asla otomatik silinmez."
+        }
+        "Unstar" => "Yıldızı kaldır",
+        "Star (never auto-deleted)" => "Yıldız ver (asla otomatik silinmez)",
+        "Star" => "Yıldız ver",
+        "Copy the clip (paste into Discord, WhatsApp…)" => "Klibi kopyala (Discord'a, WhatsApp'a… yapıştır)",
+        "More" => "Daha fazla",
+        "Copy for Discord (under 10 MB)" => "Discord için kopyala (10 MB altı)",
+        "Making a smaller copy…" => "Küçük bir kopya hazırlanıyor…",
+        "Clip copied. Paste it into Discord, WhatsApp or a folder." => "Klip kopyalandı. Discord'a, WhatsApp'a veya bir klasöre yapıştır.",
+        "Couldn't copy: {e}" => "Kopyalanamadı: {e}",
+        "Needs ffmpeg: install Clip previews from Add-ons." => "ffmpeg gerekiyor: Eklentiler'den Klip önizlemelerini kur.",
+        "Small copy ready (under 10 MB). Paste it into Discord." => "Küçük kopya hazır (10 MB altı). Discord'a yapıştır.",
+        "Couldn't make a small copy: {e}" => "Küçük kopya yapılamadı: {e}",
+        "Folder per game" => "Her oyun için klasör",
+        "Saves each clip into a folder named after the game you were playing." => {
+            "Her klibi oynadığın oyunun adını taşıyan bir klasöre kaydeder."
+        }
+        "Storage limit" => "Depolama sınırı",
+        "When the clips folder is bigger than this, the oldest clips are deleted for good. Starred clips are never deleted." => {
+            "Klip klasörü bundan büyük olunca en eski klipler kalıcı olarak silinir. Yıldızlı klipler asla silinmez."
+        }
+        "Removed {n} old clips to stay under {gb} GB" => "{gb} GB altında kalmak için {n} eski klip silindi",
+        "Whisper check" => "Whisper kontrolü",
+        "Optional. Double-checks anything that sounds like the phrase with Whisper: far fewer mistakes, especially in Turkish. Uses more CPU for a moment after you speak. {size}" => {
+            "İsteğe bağlı. Cümleye benzeyen her şeyi Whisper ile tekrar kontrol eder: özellikle Türkçede çok daha az hata. Konuştuktan sonra kısa bir süre daha fazla işlemci kullanır. {size}"
+        }
         "Strictness" => "Seçicilik",
         "Relaxed" => "Rahat",
         "Normal" => "Normal",
@@ -503,9 +578,82 @@ pub fn t(s: &str) -> &str {
 pub fn tf(s: &str, vars: &[(&str, &str)]) -> String {
     let mut out = t(s).to_string();
     for (k, v) in vars {
-        out = out.replace(&format!("{{{k}}}"), v);
+        // Values are often messages themselves (an error from the engine, a status), so
+        // they are translated too when a translation exists.
+        out = out.replace(&format!("{{{k}}}"), t(v));
     }
     out
+}
+
+/// Messages built from a template plus details (an OS error, a device name). `t` can't
+/// match those exactly, so each known template is recognised here and its parts are put
+/// into the translation.
+const TEMPLATES: &[&str] = &[
+    "Desktop audio unavailable: {e}",
+    "Microphone unavailable: {e}",
+    "Game capture unavailable ({e}); recording the monitor only.",
+    "{h} couldn't be registered ({e}). Another app may be using it.",
+    "Couldn't save replay — {e}",
+    "Couldn't delete: {e}",
+    "Couldn't copy: {e}",
+    "Couldn't update: {e}",
+    "Couldn't check: {e}",
+    "Couldn't install {key}: {e}",
+    "Couldn't add the sound: {e}",
+    "Couldn't make a small copy: {e}",
+    "Couldn't apply settings: {e}",
+    "Trim failed: {e}",
+];
+
+/// Translate a whole message: an exact match first, then the known templates.
+pub fn tp(s: &str) -> String {
+    let exact = t(s);
+    if lang() == Lang::English || exact != s {
+        return exact.to_string();
+    }
+    for template in TEMPLATES {
+        if let Some(vars) = match_template(template, s) {
+            let pairs: Vec<(&str, &str)> = vars.iter().map(|(k, v)| (*k, v.as_str())).collect();
+            return tf(template, &pairs);
+        }
+    }
+    s.to_string()
+}
+
+/// If `s` fits `template` ("text {name} more text"), the values of its placeholders.
+fn match_template<'a>(template: &'a str, s: &str) -> Option<Vec<(&'a str, String)>> {
+    // Split into literal pieces and placeholder names.
+    let mut literals: Vec<&str> = Vec::new();
+    let mut names: Vec<&str> = Vec::new();
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        let close = rest[open..].find('}')? + open;
+        literals.push(&rest[..open]);
+        names.push(&rest[open + 1..close]);
+        rest = &rest[close + 1..];
+    }
+    literals.push(rest);
+    if names.is_empty() {
+        return None;
+    }
+    let mut pos = s.strip_prefix(literals[0])?;
+    let mut out = Vec::new();
+    for (i, name) in names.iter().enumerate() {
+        let next = literals[i + 1];
+        let end = if i + 1 == names.len() {
+            if !pos.ends_with(next) {
+                return None;
+            }
+            pos.len() - next.len()
+        } else if next.is_empty() {
+            return None;
+        } else {
+            pos.find(next)?
+        };
+        out.push((*name, pos[..end].to_string()));
+        pos = &pos[end + next.len()..];
+    }
+    Some(out)
 }
 
 /// Relative age of a clip, localised. Mirrors `rewind_core::library::human_age`.
@@ -554,5 +702,26 @@ mod tests {
 
         // Restore so other tests (and the default) see English.
         set_lang(Lang::English);
+    }
+}
+
+#[cfg(test)]
+mod template_tests {
+    use super::*;
+
+    #[test]
+    fn templates_translate_their_parts() {
+        set_lang(Lang::Turkish);
+        assert_eq!(
+            tp("Microphone unavailable: no microphone found"),
+            "Mikrofon kullanılamıyor: mikrofon bulunamadı"
+        );
+        assert_eq!(
+            tp("Couldn't copy: the clipboard is busy, try again"),
+            "Kopyalanamadı: pano meşgul, tekrar dene"
+        );
+        assert_eq!(tp("something unknown"), "something unknown");
+        set_lang(Lang::English);
+        assert_eq!(tp("Microphone unavailable: x"), "Microphone unavailable: x");
     }
 }

@@ -11,6 +11,7 @@ Produces, in --out:
   theme-<id>.toml      every file in /themes
   effects-<id>.toml    downloadable toggle celebrations
   preview-ffmpeg.zip   ffmpeg.exe for hover previews (and trimming), from BtbN/FFmpeg-Builds
+  voice-whisper.zip    whisper-server.exe + DLLs + a multilingual model (optional voice check)
   packs.toml           index with a SHA-256 for every file, read by the app (Add-ons page)
 """
 import argparse
@@ -37,6 +38,11 @@ MODEL_URL = "https://alphacephei.com/vosk/models/{name}.zip"
 # Static GPL build of ffmpeg for Windows; only ffmpeg.exe is repackaged. The SHA-256 in
 # packs.toml is computed from our own zip, so a moving "latest" build is fine.
 FFMPEG_URL = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+
+# Whisper (whisper.cpp) for the optional voice double-check. The model is multilingual, so it
+# covers Turkish and English. Skipped with a warning if the download layout ever changes.
+WHISPER_BIN_URL = "https://github.com/ggml-org/whisper.cpp/releases/latest/download/whisper-bin-x64.zip"
+WHISPER_MODEL_URL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base-q5_1.bin"
 
 # Celebration painters compiled into the app; a pack simply unlocks them.
 EFFECT_STYLES = ["shine", "sparkle", "creeper", "ripple", "confetti", "comet", "bloom", "bolt"]
@@ -126,6 +132,25 @@ def main() -> int:
         p = out / "preview-ffmpeg.zip"
         flat_zip(pdir, p)
         lines += ["[preview]", f"url = {toml_str(f'{base}/{p.name}')}", f"sha256 = {toml_str(sha256(p))}", f"size_bytes = {p.stat().st_size}", ""]
+
+        print("Whisper voice check")
+        try:
+            wz = zipfile.ZipFile(io.BytesIO(fetch(WHISPER_BIN_URL)))
+            server = next((n for n in wz.namelist() if n.lower().endswith("whisper-server.exe")), None)
+            if server is None:
+                raise RuntimeError("whisper-server.exe not found in the whisper.cpp build")
+            folder = server.rsplit("/", 1)[0] + "/" if "/" in server else ""
+            wdir = tmp / "whisper"
+            wdir.mkdir()
+            for n in wz.namelist():
+                if n.startswith(folder) and "/" not in n[len(folder):] and n.lower().endswith((".dll", "whisper-server.exe")):
+                    (wdir / pathlib.PurePosixPath(n).name).write_bytes(wz.read(n))
+            (wdir / "ggml-base-q5_1.bin").write_bytes(fetch(WHISPER_MODEL_URL))
+            p = out / "voice-whisper.zip"
+            flat_zip(wdir, p)
+            lines += ["[whisper]", f"url = {toml_str(f'{base}/{p.name}')}", f"sha256 = {toml_str(sha256(p))}", f"size_bytes = {p.stat().st_size}", ""]
+        except Exception as e:  # never block a release on the optional add-on
+            print(f"warning: skipping the Whisper add-on: {e}", file=sys.stderr)
 
     effects_file = out / "effects-basic.toml"
     styles = ", ".join(f'"{s}"' for s in EFFECT_STYLES)

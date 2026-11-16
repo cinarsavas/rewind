@@ -1,6 +1,6 @@
-name = "Pixel Material"
+name = "Sage"
 author = "Rewind"
-# Inspired by Google Pixel's Material You colours: soft sage on a deep green-grey.
+# Soft sage on a deep green-grey.
 
 [colors]
 nav = "#0d110e"

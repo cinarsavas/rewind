@@ -103,3 +103,195 @@ pub fn clip_saved_sound() {
         }
     }
 }
+
+/// Name of the game or app in front right now, for per-game clip folders. `None` for the
+/// desktop, Explorer, Rewind itself and other shell windows (those clips stay in the root).
+pub fn foreground_app_name() -> Option<String> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.is_null() {
+            return None;
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, &mut pid);
+        if pid == 0 || pid == std::process::id() {
+            return None;
+        }
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process.is_null() {
+            return None;
+        }
+        let mut buf = vec![0u16; 1024];
+        let mut len = buf.len() as u32;
+        let ok = QueryFullProcessImageNameW(process, 0, buf.as_mut_ptr(), &mut len) != 0;
+        CloseHandle(process);
+        if !ok {
+            return None;
+        }
+        let exe = std::path::PathBuf::from(String::from_utf16_lossy(&buf[..len as usize]));
+        let stem = exe
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        const SHELL: [&str; 8] = [
+            "explorer",
+            "applicationframehost",
+            "shellexperiencehost",
+            "searchhost",
+            "startmenuexperiencehost",
+            "searchapp",
+            "lockapp",
+            "textinputhost",
+        ];
+        if SHELL.contains(&stem.to_lowercase().as_str()) {
+            return None;
+        }
+
+        // 1. The exe's own description ("Counter-Strike 2", "VALORANT"), unless it's a
+        //    generic runtime such as Java (Minecraft), where the window title is better.
+        let description = file_description(&exe).unwrap_or_default();
+        let generic = [
+            "java", "platform", "host", "runtime", "launcher", "electron",
+        ];
+        let lower = description.to_lowercase();
+        if !description.trim().is_empty() && !generic.iter().any(|g| lower.contains(g)) {
+            return Some(description.trim().to_string());
+        }
+        // 2. The window title, without the "- details" part and trailing version numbers.
+        let mut title = vec![0u16; 256];
+        let n = GetWindowTextW(hwnd, title.as_mut_ptr(), title.len() as i32);
+        if n > 0 {
+            let title = String::from_utf16_lossy(&title[..n as usize]);
+            let first = [" - ", " | ", " — ", " – "]
+                .iter()
+                .fold(title.clone(), |t, sep| {
+                    t.split(sep).next().unwrap_or("").to_string()
+                })
+                .trim()
+                .to_string();
+            let cleaned: Vec<&str> = first
+                .split_whitespace()
+                .filter(|w| {
+                    !w.chars()
+                        .next()
+                        .map(|c| c.is_ascii_digit())
+                        .unwrap_or(false)
+                })
+                .collect();
+            let cleaned = cleaned.join(" ");
+            if !cleaned.is_empty() {
+                return Some(cleaned);
+            }
+        }
+        // 3. The exe name, minus Unreal-style suffixes.
+        let mut name = stem;
+        for suffix in [
+            "-Win64-Shipping",
+            "-Win32-Shipping",
+            "-WinGDK-Shipping",
+            "_x64",
+            "64",
+        ] {
+            if let Some(s) = name.strip_suffix(suffix) {
+                name = s.to_string();
+            }
+        }
+        (!name.is_empty()).then_some(name)
+    }
+}
+
+/// The "FileDescription" from an exe's version resource.
+fn file_description(exe: &Path) -> Option<String> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW,
+    };
+    unsafe {
+        let path = wide(&exe.to_string_lossy());
+        let size = GetFileVersionInfoSizeW(path.as_ptr(), null_mut());
+        if size == 0 {
+            return None;
+        }
+        let mut data = vec![0u8; size as usize];
+        if GetFileVersionInfoW(path.as_ptr(), 0, size, data.as_mut_ptr().cast()) == 0 {
+            return None;
+        }
+        let mut ptr: *mut core::ffi::c_void = null_mut();
+        let mut len = 0u32;
+        let translation = wide("\\VarFileInfo\\Translation");
+        let (lang, codepage) = if VerQueryValueW(
+            data.as_ptr().cast(),
+            translation.as_ptr(),
+            &mut ptr,
+            &mut len,
+        ) != 0
+            && len >= 4
+        {
+            let words = ptr as *const u16;
+            (*words, *words.add(1))
+        } else {
+            (0x0409, 0x04b0)
+        };
+        let key = wide(&format!(
+            "\\StringFileInfo\\{lang:04x}{codepage:04x}\\FileDescription"
+        ));
+        if VerQueryValueW(data.as_ptr().cast(), key.as_ptr(), &mut ptr, &mut len) == 0 || len == 0 {
+            return None;
+        }
+        let slice = std::slice::from_raw_parts(ptr as *const u16, len as usize);
+        let text = String::from_utf16_lossy(slice);
+        Some(text.trim_end_matches('\0').trim().to_string()).filter(|s| !s.is_empty())
+    }
+}
+
+/// Put files on the clipboard the way Explorer's Copy does, so they can be pasted into
+/// Discord, WhatsApp, a chat window or a folder.
+pub fn copy_files_to_clipboard(paths: &[std::path::PathBuf]) -> Result<(), String> {
+    use windows_sys::Win32::Foundation::GlobalFree;
+    use windows_sys::Win32::System::DataExchange::{
+        CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
+    };
+    use windows_sys::Win32::System::Memory::{
+        GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE,
+    };
+    const CF_HDROP: u32 = 15;
+    // DROPFILES header: pFiles (offset of the list), pt (x, y), fNC, fWide.
+    const HEADER: usize = 20;
+    let mut list: Vec<u16> = Vec::new();
+    for p in paths {
+        list.extend(p.to_string_lossy().encode_utf16());
+        list.push(0);
+    }
+    list.push(0);
+    let bytes = HEADER + list.len() * 2;
+    unsafe {
+        let mem = GlobalAlloc(GMEM_MOVEABLE, bytes);
+        if mem.is_null() {
+            return Err("out of memory".into());
+        }
+        let dst = GlobalLock(mem) as *mut u8;
+        if dst.is_null() {
+            GlobalFree(mem);
+            return Err("couldn't lock clipboard memory".into());
+        }
+        let header: [u32; 5] = [HEADER as u32, 0, 0, 0, 1];
+        std::ptr::copy_nonoverlapping(header.as_ptr() as *const u8, dst, HEADER);
+        std::ptr::copy_nonoverlapping(list.as_ptr() as *const u8, dst.add(HEADER), list.len() * 2);
+        GlobalUnlock(mem);
+        if OpenClipboard(null_mut()) == 0 {
+            GlobalFree(mem);
+            return Err("the clipboard is busy, try again".into());
+        }
+        EmptyClipboard();
+        let set = SetClipboardData(CF_HDROP, mem);
+        CloseClipboard();
+        if set.is_null() {
+            GlobalFree(mem);
+            return Err("couldn't put the file on the clipboard".into());
+        }
+        Ok(())
+    }
+}

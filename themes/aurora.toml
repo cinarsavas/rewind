@@ -1,6 +1,6 @@
-name = "iOS 18 Aurora"
+name = "Aurora"
 author = "Rewind"
-# Inspired by the iOS 18 colourful dark wallpaper: midnight with magenta and teal light.
+# Midnight with magenta and teal light.
 
 [colors]
 nav = "#080a14"

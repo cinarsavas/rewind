@@ -1,6 +1,6 @@
-name = "iOS 17 Sunset"
+name = "Plum Sunset"
 author = "Rewind"
-# Inspired by the iOS 17 warm gradient: plum shadows with a peach glow.
+# Plum shadows with a peach glow.
 
 [colors]
 nav = "#140b10"

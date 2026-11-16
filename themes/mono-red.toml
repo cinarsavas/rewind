@@ -1,6 +1,6 @@
-name = "Nothing Mono"
+name = "Mono Red"
 author = "Rewind"
-# Inspired by the Nothing Phone: pure monochrome with a signal-red accent.
+# Pure monochrome with a signal-red accent.
 
 [colors]
 nav = "#000000"

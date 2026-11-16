@@ -13,12 +13,14 @@ mod perf;
 mod platform;
 mod preview;
 mod runtime;
+mod share;
 mod sounds;
 mod thumbs;
 mod tray;
 mod ui;
 mod updates;
 mod voice;
+mod whisper;
 
 fn main() -> eframe::Result<()> {
     // Used when building the installer: fetch the OBS runtime next to the exe, then exit.

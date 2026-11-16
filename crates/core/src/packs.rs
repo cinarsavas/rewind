@@ -85,6 +85,8 @@ pub struct PackIndex {
     pub effects: Vec<EffectPack>,
     /// Hover previews: a zip with ffmpeg.exe, used to pull frames from clips (and to trim).
     pub preview: Option<PackFile>,
+    /// Whisper double-check for voice clipping: whisper-server.exe, its DLLs and a model.
+    pub whisper: Option<PackFile>,
 }
 
 impl PackIndex {
@@ -102,6 +104,9 @@ impl PackIndex {
         }
         if let Some(p) = &self.preview {
             files.push(("hover previews", p));
+        }
+        if let Some(w) = &self.whisper {
+            files.push(("whisper", w));
         }
         files.extend(self.voice.iter().map(|v| (v.id.as_str(), &v.file)));
         files.extend(self.theme.iter().map(|t| (t.id.as_str(), &t.file)));

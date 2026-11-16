@@ -532,10 +532,10 @@ fn replay_page(app: &mut RewindApp, ui: &mut egui::Ui, ctx: &egui::Context) {
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(format!("⚠  {}", t(w))).color(pal().warn));
+                    ui.label(RichText::new(format!("⚠  {}", super::i18n::tp(w))).color(pal().warn));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if icon_button(ui, Icon::Copy, "Copy", pal().warn).clicked() {
-                            copy = Some(t(w).to_string());
+                            copy = Some(super::i18n::tp(w));
                         }
                     });
                 });
@@ -551,7 +551,12 @@ fn replay_page(app: &mut RewindApp, ui: &mut egui::Ui, ctx: &egui::Context) {
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     ui.horizontal(|ui| {
-                        ui.add(egui::Label::new(RichText::new(note).color(pal().accent)).wrap());
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(super::i18n::tp(note)).color(pal().accent),
+                            )
+                            .wrap(),
+                        );
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             if icon_button(ui, Icon::Copy, "Copy", pal().accent).clicked() {
                                 copy = Some(note.clone());
@@ -650,6 +655,9 @@ enum ClipAction {
     Trim,
     Reveal,
     Play,
+    Favorite,
+    Share,
+    ShareSmall,
 }
 
 fn apply_clip_action(app: &mut RewindApp, action: ClipAction, clip: &Clip) {
@@ -690,6 +698,9 @@ fn apply_clip_action(app: &mut RewindApp, action: ClipAction, clip: &Clip) {
         ClipAction::Play => {
             let _ = opener::open(&clip.path);
         }
+        ClipAction::Favorite => app.toggle_favorite(clip),
+        ClipAction::Share => app.share_copy(clip),
+        ClipAction::ShareSmall => app.share_small(clip),
     }
 }
 
@@ -702,6 +713,9 @@ fn delete_clip_now(app: &mut RewindApp, clip: &Clip) {
     } else {
         trash::delete(&clip.path).map_err(|e| e.to_string())
     };
+    if result.is_ok() {
+        app.favorite_moved(&clip.path, None);
+    }
     match result {
         Ok(()) if app.cfg.delete_permanently => app.notify(t("Clip deleted"), false),
         Ok(()) => app.notify(t("Moved to Recycle Bin"), false),
@@ -784,12 +798,23 @@ fn clip_row(
                 if let (Some(ffmpeg), true, false) =
                     (preview, prefetch && want_thumb, thumb_resp.hovered())
                 {
-                    previews.prefetch(&clip.path, clip.modified, ffmpeg);
+                    previews.prefetch(
+                        &clip.path,
+                        clip.modified,
+                        ffmpeg,
+                        size.x * ui.ctx().pixels_per_point(),
+                    );
                 }
                 if let (Some(ffmpeg), true) = (preview, want_thumb && thumb_resp.hovered()) {
                     previewing = true;
                     let ctx = ui.ctx().clone();
-                    match previews.hover(&ctx, &clip.path, clip.modified, ffmpeg) {
+                    match previews.hover(
+                        &ctx,
+                        &clip.path,
+                        clip.modified,
+                        ffmpeg,
+                        size.x * ctx.pixels_per_point(),
+                    ) {
                         crate::preview::Frame::Ready(tex, progress) => {
                             egui::Image::new((tex.id(), size))
                                 .corner_radius(CornerRadius::same(10))
@@ -933,6 +958,20 @@ fn clips_page(app: &mut RewindApp, ui: &mut egui::Ui) {
         if resp.changed() {
             app.mark_filter_dirty();
         }
+        let fav_color = if app.favorites_only {
+            pal().warn
+        } else {
+            pal().muted
+        };
+        let fav_icon = if app.favorites_only {
+            Icon::StarFilled
+        } else {
+            Icon::Star
+        };
+        if icon_button(ui, fav_icon, "Show only starred clips", fav_color).clicked() {
+            app.favorites_only = !app.favorites_only;
+            app.mark_filter_dirty();
+        }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if app.cfg.thumbnails {
                 // Thumbnail size. Saved right away (no Apply needed); Ctrl + mouse wheel on
@@ -983,6 +1022,11 @@ fn clips_page(app: &mut RewindApp, ui: &mut egui::Ui) {
                     &[("key", &app.cfg.save_hotkey.to_string())],
                 ),
             )
+        } else if app.favorites_only {
+            (
+                "No starred clips",
+                t("Star a clip to keep it here. Starred clips are never auto-deleted.").to_string(),
+            )
         } else {
             ("Nothing matches that search", String::new())
         };
@@ -1003,41 +1047,65 @@ fn clips_page(app: &mut RewindApp, ui: &mut egui::Ui) {
         preview: preview_exe.as_deref(),
         prefetch: ui.ctx().input(|i| i.viewport().focused.unwrap_or(false)),
     };
-    let mut any_preview = false;
     let animate = animations_on() && !app.cfg.low_power_ui;
     let shown = app.list_shown;
+
+    // A grid of cards: thumbnail on top, then the name and the buttons each get the full
+    // card width, so long names and the action icons never fight for space. The Size slider
+    // sets the card width; the column count follows the window.
+    const GAP: f32 = 14.0;
+    let avail = ui.available_width();
+    let wanted = (250.0 * app.cfg.clip_zoom).max(230.0);
+    let cols = (((avail + GAP) / (wanted + GAP)).floor() as usize).max(1);
+    let card_w = ((avail - GAP * (cols as f32 - 1.0)) / cols as f32).floor();
+    let total = app.filter_idx.len();
+    let rows = total.div_ceil(cols);
+
+    let mut any_preview = false;
     let mut action: Option<(usize, ClipAction)> = None;
-    // Rows scrolled out of view are replaced by empty space of the same height, so a long
-    // library costs the same per frame as a short one and only visible rows ask for
-    // thumbnails. The height comes from the last row that was actually drawn.
+    // Rows scrolled out of view become empty space of the same height, so a big library
+    // costs the same per frame as a small one and only visible cards load thumbnails.
     let mut row_h = app.clip_row_h;
-    for (pos, &i) in app.filter_idx.iter().enumerate() {
+    for r in 0..rows {
         let top = ui.cursor().top();
         if row_h > 0.0 {
-            let slot = egui::Rect::from_min_size(
-                pos2(ui.cursor().left(), top),
-                vec2(ui.available_width(), row_h),
-            );
+            let slot = egui::Rect::from_min_size(pos2(ui.cursor().left(), top), vec2(avail, row_h));
             if !ui.is_rect_visible(slot) {
                 ui.add_space(row_h);
                 continue;
             }
         }
-        let reveal = row_reveal_at(shown, pos, animate);
-        let row = &app.clip_rows[i];
-        let (a, previewing) = clip_row(
-            ui,
-            &row.clip,
-            &row.meta,
-            &mut app.thumbs,
-            &mut app.previews,
-            opts,
-            reveal,
-        );
-        any_preview |= previewing;
-        if let Some(a) = a {
-            action = Some((i, a));
-        }
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = GAP;
+            for c in 0..cols {
+                let pos = r * cols + c;
+                let Some(&i) = app.filter_idx.get(pos) else {
+                    break;
+                };
+                let reveal = row_reveal_at(shown, pos, animate);
+                let row = &app.clip_rows[i];
+                let key = rewind_core::library::relative_key(&app.cfg.output_dir, &row.clip.path);
+                let fav = app.cfg.favorites.iter().any(|f| *f == key);
+                let sharing = app.sharing.as_deref() == Some(row.clip.name.as_str());
+                let (a, previewing) = clip_card(
+                    ui,
+                    card_w,
+                    &row.clip,
+                    &row.meta,
+                    fav,
+                    sharing,
+                    &mut app.thumbs,
+                    &mut app.previews,
+                    opts,
+                    reveal,
+                );
+                any_preview |= previewing;
+                if let Some(a) = a {
+                    action = Some((i, a));
+                }
+            }
+        });
+        ui.add_space(GAP - ui.spacing().item_spacing.y);
         row_h = ui.cursor().top() - top;
     }
     app.clip_row_h = row_h;
@@ -1048,6 +1116,265 @@ fn clips_page(app: &mut RewindApp, ui: &mut egui::Ui) {
         let clip = app.clip_rows[i].clip.clone();
         apply_clip_action(app, a, &clip);
     }
+}
+
+/// One clip in the Clips grid. Returns the chosen action and whether the thumbnail is
+/// being hovered for a preview.
+#[allow(clippy::too_many_arguments)]
+fn clip_card(
+    ui: &mut egui::Ui,
+    width: f32,
+    clip: &Clip,
+    meta: &str,
+    favorite: bool,
+    sharing: bool,
+    thumbs: &mut Thumbs,
+    previews: &mut crate::preview::Previews,
+    opts: RowOpts,
+    reveal: f32,
+) -> (Option<ClipAction>, bool) {
+    let mut action = None;
+    let mut previewing = false;
+    let prev_opacity = ui.opacity();
+    if reveal < 1.0 {
+        ui.multiply_opacity(reveal.max(0.0));
+    }
+    let inner = width - 20.0;
+    let resp = ui
+        .allocate_ui(vec2(width, 0.0), |ui| {
+            egui::Frame::new()
+                .fill(pal().card)
+                .stroke(Stroke::new(1.0, pal().stroke))
+                .corner_radius(CornerRadius::same(14))
+                .inner_margin(Margin::same(10))
+                .show(ui, |ui| {
+                    ui.set_width(inner);
+                    ui.spacing_mut().item_spacing.y = 6.0;
+
+                    // ---- thumbnail (click to play, hover to preview)
+                    let size = if opts.want_thumb {
+                        vec2(inner, (inner * 9.0 / 16.0).round())
+                    } else {
+                        vec2(inner, 64.0)
+                    };
+                    let (r, thumb) = ui.allocate_exact_size(size, Sense::click());
+                    let tex = if opts.want_thumb {
+                        thumbs.get(ui.ctx(), &clip.path, clip.modified)
+                    } else {
+                        None
+                    };
+                    match &tex {
+                        Some(tex) => {
+                            egui::Image::new((tex.id(), size))
+                                .corner_radius(CornerRadius::same(10))
+                                .paint_at(ui, r);
+                        }
+                        None => {
+                            ui.painter()
+                                .rect_filled(r, CornerRadius::same(10), pal().deep);
+                            paint_icon(ui.painter(), Icon::Play, r.center(), 22.0, pal().accent);
+                        }
+                    }
+                    if let (Some(ffmpeg), true, false) = (
+                        opts.preview,
+                        opts.prefetch && opts.want_thumb,
+                        thumb.hovered(),
+                    ) {
+                        previews.prefetch(
+                            &clip.path,
+                            clip.modified,
+                            ffmpeg,
+                            size.x * ui.ctx().pixels_per_point(),
+                        );
+                    }
+                    if let (Some(ffmpeg), true) = (opts.preview, opts.want_thumb && thumb.hovered())
+                    {
+                        previewing = true;
+                        let ctx = ui.ctx().clone();
+                        match previews.hover(
+                            &ctx,
+                            &clip.path,
+                            clip.modified,
+                            ffmpeg,
+                            size.x * ctx.pixels_per_point(),
+                        ) {
+                            crate::preview::Frame::Ready(tex, progress) => {
+                                egui::Image::new((tex.id(), size))
+                                    .corner_radius(CornerRadius::same(10))
+                                    .paint_at(ui, r);
+                                let bar = egui::Rect::from_min_max(
+                                    pos2(r.left() + 8.0, r.bottom() - 7.0),
+                                    pos2(r.right() - 8.0, r.bottom() - 4.0),
+                                );
+                                ui.painter().rect_filled(
+                                    bar,
+                                    CornerRadius::same(2),
+                                    Color32::from_black_alpha(120),
+                                );
+                                ui.painter().rect_filled(
+                                    egui::Rect::from_min_max(
+                                        bar.min,
+                                        pos2(bar.left() + bar.width() * progress, bar.bottom()),
+                                    ),
+                                    CornerRadius::same(2),
+                                    pal().accent,
+                                );
+                            }
+                            crate::preview::Frame::Loading => {
+                                let tm = ui.input(|i| i.time) as f32;
+                                for k in 0..3 {
+                                    let a =
+                                        ((tm * 3.0 - k as f32 * 0.6).sin() * 0.5 + 0.5) * 0.8 + 0.2;
+                                    ui.painter().circle_filled(
+                                        pos2(
+                                            r.center().x + (k as f32 - 1.0) * 10.0,
+                                            r.bottom() - 14.0,
+                                        ),
+                                        3.0,
+                                        pal().accent.gamma_multiply(a),
+                                    );
+                                }
+                            }
+                            crate::preview::Frame::Failed(_) => {}
+                        }
+                    } else if thumb.hovered() && tex.is_some() {
+                        // A soft play badge so it's clear the picture opens the clip.
+                        ui.painter().circle_filled(
+                            r.center(),
+                            20.0,
+                            Color32::from_black_alpha(140),
+                        );
+                        paint_icon(ui.painter(), Icon::Play, r.center(), 18.0, Color32::WHITE);
+                    }
+                    if thumb.clicked() {
+                        action = Some(ClipAction::Play);
+                    }
+
+                    // ---- star, always visible on starred clips, on hover otherwise
+                    let star_rect = egui::Rect::from_center_size(
+                        pos2(r.left() + 20.0, r.top() + 20.0),
+                        vec2(30.0, 30.0),
+                    );
+                    let star = ui.interact(star_rect, thumb.id.with("star"), Sense::click());
+                    if favorite || thumb.hovered() || star.hovered() {
+                        ui.painter().circle_filled(
+                            star_rect.center(),
+                            14.0,
+                            Color32::from_black_alpha(if star.hovered() { 170 } else { 120 }),
+                        );
+                        paint_icon(
+                            ui.painter(),
+                            if favorite {
+                                Icon::StarFilled
+                            } else {
+                                Icon::Star
+                            },
+                            star_rect.center(),
+                            16.0,
+                            if favorite { pal().warn } else { Color32::WHITE },
+                        );
+                    }
+                    let star = star.on_hover_text(t(if favorite {
+                        "Unstar"
+                    } else {
+                        "Star (never auto-deleted)"
+                    }));
+                    if star.clicked() {
+                        action = Some(ClipAction::Favorite);
+                    }
+
+                    // ---- name and details, each on their own full-width line
+                    ui.add(egui::Label::new(bold(&clip.name).size(14.0)).truncate())
+                        .on_hover_text(&clip.name);
+                    ui.add(egui::Label::new(muted(meta)).truncate());
+
+                    // ---- actions: the common ones as icons, the rest in a menu
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                        if icon_button(ui, Icon::Play, "Play", pal().accent).clicked() {
+                            action = Some(ClipAction::Play);
+                        }
+                        if icon_button(
+                            ui,
+                            Icon::Copy,
+                            "Copy the clip (paste into Discord, WhatsApp…)",
+                            pal().muted,
+                        )
+                        .clicked()
+                        {
+                            action = Some(ClipAction::Share);
+                        }
+                        if icon_button(ui, Icon::Folder, "Show in folder", pal().muted).clicked() {
+                            action = Some(ClipAction::Reveal);
+                        }
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            let tip = if opts.permanent {
+                                "Delete permanently"
+                            } else {
+                                "Move to Recycle Bin"
+                            };
+                            if icon_button(ui, Icon::Trash, tip, pal().danger).clicked() {
+                                action = Some(ClipAction::Delete);
+                            }
+                            let more = icon_button(ui, Icon::More, "More", pal().muted);
+                            egui::Popup::menu(&more).show(|ui| {
+                                ui.set_min_width(210.0);
+                                if ui.button(t("Rename")).clicked() {
+                                    action = Some(ClipAction::Rename);
+                                }
+                                let trim =
+                                    ui.add_enabled(opts.can_trim, egui::Button::new(t("Trim")));
+                                let trim = if opts.can_trim {
+                                    trim
+                                } else {
+                                    trim.on_disabled_hover_text(t(
+                                        "Needs ffmpeg next to Rewind.exe or on PATH",
+                                    ))
+                                };
+                                if trim.clicked() {
+                                    action = Some(ClipAction::Trim);
+                                }
+                                let small = ui.add_enabled(
+                                    opts.can_trim && !sharing,
+                                    egui::Button::new(if sharing {
+                                        t("Making a smaller copy…")
+                                    } else {
+                                        t("Copy for Discord (under 10 MB)")
+                                    }),
+                                );
+                                if small.clicked() {
+                                    action = Some(ClipAction::ShareSmall);
+                                }
+                                if ui
+                                    .button(t(if favorite { "Unstar" } else { "Star" }))
+                                    .clicked()
+                                {
+                                    action = Some(ClipAction::Favorite);
+                                }
+                            });
+                        });
+                    });
+                })
+                .response
+        })
+        .inner;
+    if reveal < 1.0 {
+        ui.set_opacity(prev_opacity);
+    }
+    let hover = ui.ctx().animate_bool_with_time(
+        resp.id.with("card-hover"),
+        ui.rect_contains_pointer(resp.rect),
+        anim_time(0.18),
+    );
+    if hover > 0.0 {
+        ui.painter().rect_stroke(
+            resp.rect,
+            CornerRadius::same(14),
+            Stroke::new(1.0, pal().stroke.lerp_to_gamma(pal().accent, 0.55 * hover)),
+            egui::StrokeKind::Inside,
+        );
+    }
+    (action, previewing)
 }
 
 // ---------------------------------------------------------------- settings page
@@ -1470,9 +1797,38 @@ fn settings_page(app: &mut RewindApp, ui: &mut egui::Ui, _ctx: &egui::Context) {
             ui,
             "Delete permanently",
             "Skip the Recycle Bin. Deleted clips can't be recovered.",
-            true,
+            false,
             |ui| {
                 toggle(ui, &mut app.draft.delete_permanently);
+            },
+        );
+        setting_row(
+            ui,
+            "Folder per game",
+            "Saves each clip into a folder named after the game you were playing.",
+            false,
+            |ui| {
+                toggle(ui, &mut app.draft.per_game_folders);
+            },
+        );
+        setting_row(
+            ui,
+            "Storage limit",
+            "When the clips folder is bigger than this, the oldest clips are deleted for good. Starred clips are never deleted.",
+            true,
+            |ui| {
+                let off = t("Off").to_string();
+                ui.add(
+                    egui::Slider::new(&mut app.draft.storage_limit_gb, 0..=500)
+                        .custom_formatter(move |v, _| {
+                            if v < 0.5 {
+                                off.clone()
+                            } else {
+                                format!("{v:.0} GB")
+                            }
+                        })
+                        .trailing_fill(true),
+                );
             },
         );
         setting_row(ui, "Save folder", "", true, |ui| {
@@ -1925,6 +2281,7 @@ fn rename_window(app: &mut RewindApp, ctx: &egui::Context) {
     if run {
         match rename_clip(&clip, &stem) {
             Ok(new_path) => {
+                app.favorite_moved(&clip.path, Some(new_path.as_path()));
                 if app.last_saved.as_ref() == Some(&clip.path) {
                     app.last_saved = Some(new_path);
                 }
@@ -2332,6 +2689,41 @@ fn addons_page(app: &mut RewindApp, ui: &mut egui::Ui) {
             },
         );
         let ready = runtime_ready && app.packs.model_installed(&app.draft.voice.language);
+        // Optional Whisper check: much more accurate (especially Turkish), heavier, so it only
+        // runs for sentences Vosk thinks might be the phrase.
+        let whisper_ready = app.packs.whisper_installed();
+        let whisper_size = index
+            .as_ref()
+            .and_then(|i| i.whisper.as_ref())
+            .map(|f| human_size(f.size_bytes))
+            .unwrap_or_default();
+        let whisper_can = index.as_ref().and_then(|i| i.whisper.as_ref()).is_some();
+        let whisper_hint = if whisper_ready || whisper_can {
+            tf(
+                "Optional. Double-checks anything that sounds like the phrase with Whisper: far fewer mistakes, especially in Turkish. Uses more CPU for a moment after you speak. {size}",
+                &[("size", &whisper_size)],
+            )
+        } else {
+            t("Not available from this release.").to_string()
+        };
+        setting_row(ui, "Whisper check", &whisper_hint, false, |ui| {
+            if whisper_ready {
+                toggle(ui, &mut app.draft.voice.use_whisper);
+            }
+            pack_controls(
+                app,
+                ui,
+                crate::packs::KEY_WHISPER,
+                whisper_ready,
+                whisper_can,
+                |a| a.packs.install_whisper(),
+                |a| {
+                    a.packs.remove_whisper();
+                    a.invalidate_voice_files();
+                    a.sync_voice();
+                },
+            );
+        });
         setting_row(
             ui,
             "Save a clip when I say the phrase",
@@ -2356,7 +2748,7 @@ fn addons_page(app: &mut RewindApp, ui: &mut egui::Ui) {
                 ui.horizontal(|ui| {
                     ui.add(
                         egui::TextEdit::singleline(&mut app.draft.voice.phrase)
-                            .desired_width(220.0)
+                            .desired_width(240.0)
                             .margin(Margin::symmetric(10, 7)),
                     );
                     let default =
@@ -2515,10 +2907,13 @@ fn addons_page(app: &mut RewindApp, ui: &mut egui::Ui) {
                 Verdict::Cooldown => ("Ignored: a clip was just saved", pal().muted),
                 Verdict::Different | Verdict::Nothing => ("Not the phrase", pal().muted),
             };
-            let conf = h
-                .conf
-                .map(|c| format!(" · {:.0}%", c * 100.0))
-                .unwrap_or_default();
+            let conf = if h.by_whisper {
+                " · Whisper".to_string()
+            } else {
+                h.conf
+                    .map(|c| format!(" · {:.0}%", c * 100.0))
+                    .unwrap_or_default()
+            };
             card_row_heard(ui, &format!("\"{}\"{conf}", h.text), t(why), color);
         }
     });
@@ -2654,9 +3049,15 @@ fn addons_page(app: &mut RewindApp, ui: &mut egui::Ui) {
         }
         for (i, p) in installed.iter().enumerate() {
             let hint = if p.author.is_empty() {
-                format!("{} effects · Installed", p.styles.len())
+                tf(
+                    "{n} effects · Installed",
+                    &[("n", &p.styles.len().to_string())],
+                )
             } else {
-                format!("{} effects · by {}", p.styles.len(), p.author)
+                tf(
+                    "{n} effects · by {author}",
+                    &[("n", &p.styles.len().to_string()), ("author", &p.author)],
+                )
             };
             let id = p.id.clone();
             setting_row(

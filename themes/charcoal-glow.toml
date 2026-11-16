@@ -1,6 +1,6 @@
-name = "iOS 13 Dusk"
+name = "Charcoal Glow"
 author = "Rewind"
-# Inspired by the iOS 13 dark abstract wallpaper: charcoal with a warm orange glow.
+# Charcoal with a warm orange glow.
 
 [colors]
 nav = "#0b0b0d"

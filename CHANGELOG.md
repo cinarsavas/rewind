@@ -2,11 +2,29 @@
 
 All notable changes are listed here. The section for a tag becomes that release's notes.
 
+## [0.3.5]
+
+### Added
+- **A new Clips page.** Clips are now cards in a grid: a big thumbnail (click to play, hover for the preview), the full-width name and details underneath, and the buttons on their own row, so long names and the buttons never squeeze each other. **Size** (or Ctrl + mouse wheel) changes how big the cards are; the number of columns follows the window. Less common actions (Rename, Trim, Copy for Discord, Star) are in the **⋯** menu.
+- **Favourites.** Star a clip from its thumbnail or the ⋯ menu; the star button next to the search box shows only starred clips. Starred clips are never deleted by the storage limit.
+- **Quick share (Clips page).** The copy button puts the clip itself on the clipboard, so you can paste it straight into Discord, WhatsApp or a folder. **Copy for Discord (under 10 MB)** makes a 720p copy that fits Discord's free upload limit first (needs ffmpeg, e.g. from the Clip previews add-on).
+- **Folder per game (on by default).** Each clip is saved into a folder named after the game or app that was in front when you saved it, e.g. `Videos\Rewind\Counter-Strike 2`. Clips saved from Rewind itself or the desktop stay in the main folder. Settings → Replay buffer.
+- **Storage limit (off by default).** Settings → Replay buffer → **Storage limit** deletes the oldest clips for good when the folder grows past the size you pick. Starred clips are never deleted.
+- **Whisper check for voice clipping (optional add-on).** Install **Whisper check** under Add-ons → Voice clipping and anything that sounds like your phrase is double-checked by Whisper, which is far more accurate, especially in Turkish. Vosk keeps listening cheaply; Whisper only runs for a moment after a phrase-like sentence, at lower priority. If Whisper isn't available it falls back to the normal check. The voice test shows when Whisper made the call.
+
+### Changed
+- **Hover previews are much lighter.** Frames are pulled at the size the card is actually shown at (240 px for normal cards, 400 px only for big ones), at 4 frames a second, and kept compressed in memory: only the frame on screen is decoded. A hovered clip now uses well under 1 MB of memory instead of about 20 MB, so more of them stay ready.
+
+### Fixed
+- **The Turkish interface is complete.** Engine notes (for example the CPU-encoding message), error messages from saving, audio devices, downloads, sounds and the clipboard, the tray menu and its tooltip are now translated too, including messages that carry details such as a device error. The tray menu switches language as soon as you press Apply.
+- New theme names: Charcoal Glow, Coral Night, Violet Wave, Deep Ocean, Plum Sunset, Aurora, Brushed Metal, Cobalt, Sage and Mono Red. Themes you already installed keep working.
+- The voice **Trigger phrase** box was squeezed to a sliver by its long hint. Setting hints now wrap onto a second line instead of crushing the control next to them.
+
 ## [0.3.4]
 
 ### Added
 - **Your own clip-saved sounds.** Drag an .mp3 or .wav onto Rewind to add it, then pick it under Settings → Notifications → **Sound** (the first one you add is picked for you). Add-ons → **Custom sounds** lists them with Play, Use and Remove buttons and opens the sounds folder. Up to 5 sounds are kept unless you turn off **Limit to 5 sounds**. Files over 10 MB are refused; anything that won't play falls back to the Rewind chime.
-- **10 new themes** inspired by phone wallpapers and colour schemes: iOS 13 Dusk, iOS 14 Sorbet, iOS 15 Hello, iOS 16 Ocean, iOS 17 Sunset, iOS 18 Aurora, Titanium, Galaxy One UI, Pixel Material and Nothing Mono. They're optional downloads in Add-ons → Themes.
+- **10 new themes** inspired by phone wallpapers and colour schemes. They're optional downloads in Add-ons → Themes.
 - **Try a theme before installing it.** Every downloadable theme has a **Preview** button: it shows the theme right away without installing it, and the downloaded file is deleted as soon as it's loaded. Press **Install it** to keep it, or **End preview** (leaving the Add-ons page ends it too).
 - **Better Turkish voice clipping.** What the recogniser hears is now cleaned first (a high-pass filter removes rumble and fan noise, and automatic gain lifts quiet or distant mics), many more look-alike Turkish words were added so near-misses don't turn into clips, and you can set **Strictness** (Relaxed / Normal / Strict). You can also give several phrases separated by commas, for example `klip al, klibi al`.
 - **Voice test button.** The live mic meter and "Last heard" now appear only while a test is running: press **Test** next to the voice status, and it stays open for 20 seconds or until you press **Stop test**.

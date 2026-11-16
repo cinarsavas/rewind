@@ -1,6 +1,6 @@
-name = "Titanium"
+name = "Brushed Metal"
 author = "Rewind"
-# Inspired by the titanium iPhone Pro finishes: warm greys with a brushed-metal accent.
+# Warm greys with a brushed-metal accent.
 
 [colors]
 nav = "#0f0f10"

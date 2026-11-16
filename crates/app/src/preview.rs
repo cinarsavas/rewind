@@ -9,7 +9,10 @@
 //!   one at a time, at idle priority on one thread, so they're usually ready before you hover;
 //! - a hover jumps the queue and stops any background job, and runs at normal priority with
 //!   all threads, skipping frames that nothing depends on;
-//! - decoded frames for the last few hovered clips stay in memory.
+//! - frames are kept as small JPEGs in memory and only the one on screen is decoded, so a
+//!   hovered clip costs well under a megabyte instead of tens of megabytes;
+//! - frames are pulled at the size the card is actually shown at (small cards get small
+//!   frames), so big libraries and small cards stay cheap.
 //!
 //! Nothing runs while you're in a game (Rewind isn't in front then), and the UI uploads one
 //! small texture at a time, only while hovering.
@@ -27,15 +30,27 @@ use eframe::egui;
 /// Seconds from the end of the clip that the preview covers.
 const SPAN_SECS: u32 = 20;
 /// Frames pulled per second of clip, and the playback rate (2x speed: a 10 s loop).
-const EXTRACT_FPS: u32 = 5;
-const PLAY_FPS: f32 = 10.0;
-const FRAME_WIDTH: u32 = 320;
+const EXTRACT_FPS: u32 = 4;
+const PLAY_FPS: f32 = 8.0;
+/// Frame widths: cards shown smaller than about 300 px get the small size.
+const SMALL_WIDTH: u32 = 240;
+const LARGE_WIDTH: u32 = 400;
 /// Previews kept on disk before the oldest are removed.
 const MAX_CACHED: usize = 150;
 /// Decoded clips kept in memory for quick back-and-forth hovering.
-const IN_MEMORY: usize = 4;
+const IN_MEMORY: usize = 8;
 
-type Key = (PathBuf, SystemTime);
+/// Clip path, modification time, frame width.
+type Key = (PathBuf, SystemTime, u32);
+
+/// Frame width for a thumbnail shown `display_px` physical pixels wide.
+fn width_for(display_px: f32) -> u32 {
+    if display_px > 300.0 {
+        LARGE_WIDTH
+    } else {
+        SMALL_WIDTH
+    }
+}
 
 enum Cmd {
     /// The pointer is on this clip: do it now and send the frames back.
@@ -45,13 +60,14 @@ enum Cmd {
 }
 
 enum Done {
-    Ready(Key, Vec<egui::ColorImage>),
+    Ready(Key, Vec<Vec<u8>>),
     Failed(Key, String),
 }
 
 enum State {
     Loading,
-    Ready(Vec<egui::ColorImage>),
+    /// JPEG bytes of every frame; only the one on screen is decoded.
+    Ready(Vec<Vec<u8>>),
     Failed(String),
 }
 
@@ -108,8 +124,8 @@ impl Previews {
     }
 
     /// Ask for this clip to be prepared in the background (visible rows, window in front).
-    pub fn prefetch(&mut self, path: &Path, modified: SystemTime, ffmpeg: &Path) {
-        let key: Key = (path.to_path_buf(), modified);
+    pub fn prefetch(&mut self, path: &Path, modified: SystemTime, ffmpeg: &Path, display_px: f32) {
+        let key: Key = (path.to_path_buf(), modified, width_for(display_px));
         if self.prefetched.insert(key.clone()) {
             let _ = self.tx.send(Cmd::Prefetch(key, ffmpeg.to_path_buf()));
         }
@@ -122,9 +138,10 @@ impl Previews {
         path: &Path,
         modified: SystemTime,
         ffmpeg: &Path,
+        display_px: f32,
     ) -> Frame<'_> {
         self.drain();
-        let key: Key = (path.to_path_buf(), modified);
+        let key: Key = (path.to_path_buf(), modified, width_for(display_px));
         let new_hover = self.hovered.as_ref() != Some(&key);
         if new_hover {
             self.hovered = Some(key.clone());
@@ -163,7 +180,10 @@ impl Previews {
                 let n = frames.len();
                 let i = ((elapsed * PLAY_FPS) as usize) % n;
                 if self.shown.as_ref() != Some(&(key.clone(), i)) || self.texture.is_none() {
-                    let image = frames[i].clone();
+                    // Decode just this frame (a few hundred microseconds for a small JPEG).
+                    let Some(image) = decode(&frames[i]) else {
+                        return Frame::Loading;
+                    };
                     match &mut self.texture {
                         Some(tex) => tex.set(image, egui::TextureOptions::LINEAR),
                         None => {
@@ -253,7 +273,18 @@ fn cache_dir_for(cache_dir: &Path, key: &Key) -> PathBuf {
     let mut h = DefaultHasher::new();
     key.0.hash(&mut h);
     key.1.hash(&mut h);
+    key.2.hash(&mut h);
     cache_dir.join(format!("{:016x}", h.finish()))
+}
+
+fn decode(jpeg: &[u8]) -> Option<egui::ColorImage> {
+    let img = image::load_from_memory_with_format(jpeg, image::ImageFormat::Jpeg).ok()?;
+    let rgba = img.to_rgba8();
+    let size = [rgba.width() as usize, rgba.height() as usize];
+    Some(egui::ColorImage::from_rgba_unmultiplied(
+        size,
+        rgba.as_raw(),
+    ))
 }
 
 /// Make sure the frames are on disk, then decode them.
@@ -263,7 +294,7 @@ fn frames_for(
     ffmpeg: &Path,
     foreground: bool,
     interrupt: Option<(&Receiver<Cmd>, &mut Option<Cmd>)>,
-) -> Result<Vec<egui::ColorImage>, String> {
+) -> Result<Vec<Vec<u8>>, String> {
     let dir = extract(cache_dir, key, ffmpeg, foreground, interrupt)?;
     let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
         .map_err(|e| format!("cache folder: {e}"))?
@@ -272,17 +303,12 @@ fn frames_for(
         .filter(|p| p.extension().map(|x| x == "jpg").unwrap_or(false))
         .collect();
     files.sort();
-    let mut frames = Vec::with_capacity(files.len());
-    for f in files {
-        let Ok(img) = image::open(&f) else { continue };
-        let rgba = img.to_rgba8();
-        let size = [rgba.width() as usize, rgba.height() as usize];
-        frames.push(egui::ColorImage::from_rgba_unmultiplied(
-            size,
-            rgba.as_raw(),
-        ));
-    }
-    Ok(frames)
+    // Keep the compressed bytes; decoding happens one frame at a time while shown.
+    Ok(files
+        .iter()
+        .filter_map(|f| std::fs::read(f).ok())
+        .filter(|b| !b.is_empty())
+        .collect())
 }
 
 /// Run ffmpeg for one clip unless its frames are already cached. Returns the frame folder.
@@ -317,9 +343,9 @@ fn extract(
         .args([
             "-an",
             "-vf",
-            &format!("fps={EXTRACT_FPS},scale={FRAME_WIDTH}:-2"),
+            &format!("fps={EXTRACT_FPS},scale={}:-2:flags=fast_bilinear", key.2),
             "-q:v",
-            "6",
+            "7",
         ])
         .arg(dir.join("f%03d.jpg"))
         .stdout(std::process::Stdio::null())

@@ -1,6 +1,6 @@
-name = "iOS 15 Hello"
+name = "Violet Wave"
 author = "Rewind"
-# Inspired by the iOS 15 flowing wallpaper: indigo fading into violet.
+# Indigo fading into violet.
 
 [colors]
 nav = "#0b0a1c"

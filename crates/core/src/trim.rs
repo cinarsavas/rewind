@@ -131,9 +131,42 @@ pub fn find_ffmpeg(app_dir: Option<&Path>) -> Option<PathBuf> {
     })
 }
 
+/// Read "Duration: 00:01:02.50" from ffmpeg's banner output, in seconds.
+pub fn parse_ffmpeg_duration(text: &str) -> Option<f64> {
+    let at = text.find("Duration: ")? + "Duration: ".len();
+    let stamp = text[at..].split(',').next()?.trim();
+    let mut parts = stamp.split(':');
+    let h: f64 = parts.next()?.parse().ok()?;
+    let m: f64 = parts.next()?.parse().ok()?;
+    let s: f64 = parts.next()?.parse().ok()?;
+    let total = h * 3600.0 + m * 60.0 + s;
+    (total > 0.0).then_some(total)
+}
+
+/// Video bitrate (kbps) that keeps a clip of `secs` under `target_mb` with `audio_kbps` audio.
+pub fn share_bitrate_kbps(secs: Option<f64>, target_mb: f64, audio_kbps: u32) -> u32 {
+    let Some(secs) = secs.filter(|s| *s > 0.5) else {
+        return 1_500;
+    };
+    // 5 % headroom for the container.
+    let total_kbps = target_mb * 8.0 * 1000.0 * 0.95 / secs;
+    ((total_kbps - audio_kbps as f64).floor() as i64).clamp(250, 8_000) as u32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn share_sizing() {
+        let banner = "  Duration: 00:01:00.00, start: 0.000000, bitrate: 20000 kb/s";
+        assert_eq!(parse_ffmpeg_duration(banner), Some(60.0));
+        assert_eq!(parse_ffmpeg_duration("no banner"), None);
+        let k = share_bitrate_kbps(Some(60.0), 10.0, 96);
+        assert!((1100..=1250).contains(&k), "{k}");
+        assert_eq!(share_bitrate_kbps(None, 10.0, 96), 1_500);
+        assert_eq!(share_bitrate_kbps(Some(3600.0), 10.0, 96), 250);
+    }
 
     fn job(start: f64, end: f64) -> TrimJob {
         TrimJob {

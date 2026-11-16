@@ -338,6 +338,8 @@ pub struct VoiceConfig {
     pub sensitivity: f32,
     /// How sure the recogniser must be before a clip is saved.
     pub strictness: Strictness,
+    /// Double-check with the Whisper add-on when it's installed (more accurate, more CPU).
+    pub use_whisper: bool,
 }
 
 /// How picky voice clipping is. Relaxed misses less but may save a clip by mistake more often.
@@ -384,6 +386,7 @@ impl Default for VoiceConfig {
             phrase: default_phrase(Lang::English).into(),
             sensitivity: 0.5,
             strictness: Strictness::Normal,
+            use_whisper: true,
         }
     }
 }
@@ -453,6 +456,13 @@ pub struct Config {
     pub language: Lang,
     /// Ask before deleting a clip. Turn off to delete straight to the Recycle Bin.
     pub confirm_delete: bool,
+    /// Save each clip into a folder named after the game (or app) in front when it was saved.
+    pub per_game_folders: bool,
+    /// Delete the oldest clips (never favourites) when the folder grows past this many GB.
+    /// 0 = never.
+    pub storage_limit_gb: u32,
+    /// Starred clips, as paths relative to the clips folder ("Game/clip.mp4").
+    pub favorites: Vec<String>,
     /// Delete clips for good instead of sending them to the Recycle Bin. Off by default.
     pub delete_permanently: bool,
     /// Check GitHub for a newer release shortly after launch.
@@ -505,6 +515,9 @@ impl Default for Config {
             hover_preview: true,
             language: Lang::English,
             confirm_delete: true,
+            per_game_folders: true,
+            storage_limit_gb: 0,
+            favorites: Vec::new(),
             delete_permanently: false,
             check_updates: true,
             auto_install_updates: true,
@@ -536,6 +549,7 @@ impl Config {
         self.buffer_max_mb = self.buffer_max_mb.clamp(128, 32_768);
         self.overlay_secs = self.overlay_secs.clamp(1, 10);
         self.voice.sensitivity = self.voice.sensitivity.clamp(0.0, 1.0);
+        self.storage_limit_gb = self.storage_limit_gb.min(10_000);
         self.clip_zoom = if self.clip_zoom.is_finite() {
             self.clip_zoom.clamp(0.75, 2.5)
         } else {
@@ -639,6 +653,9 @@ impl Config {
         same.hover_preview = self.hover_preview;
         same.language = self.language;
         same.confirm_delete = self.confirm_delete;
+        same.per_game_folders = self.per_game_folders;
+        same.storage_limit_gb = self.storage_limit_gb;
+        same.favorites = self.favorites.clone();
         same.delete_permanently = self.delete_permanently;
         same.check_updates = self.check_updates;
         same.auto_install_updates = self.auto_install_updates;
