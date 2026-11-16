@@ -145,6 +145,65 @@ impl PhraseMatcher {
         self.words.join(" ")
     }
 
+    /// Strict check for a *finished* utterance: the trigger must be the whole thing that was
+    /// said (ignoring `[unk]`), not a phrase buried in a sentence, and every word must be
+    /// recognised with at least `min_conf` confidence when the recogniser reports it.
+    ///
+    /// This is what stops a small model (Turkish especially) from saving a clip for half of
+    /// what you say: with a tiny grammar, anything that sounds a bit like "klip al" gets
+    /// forced onto it, but those guesses come back as longer utterances or low confidence.
+    pub fn matches_utterance(
+        &mut self,
+        recognised: &str,
+        word_conf: Option<f32>,
+        min_conf: f32,
+        now_ms: u64,
+    ) -> bool {
+        self.judge(recognised, word_conf, min_conf, now_ms) == Verdict::Match
+    }
+
+    /// Like [`Self::matches_utterance`], but says why an utterance didn't count, for the
+    /// voice test readout in the app.
+    pub fn judge(
+        &mut self,
+        recognised: &str,
+        word_conf: Option<f32>,
+        min_conf: f32,
+        now_ms: u64,
+    ) -> Verdict {
+        let norm = normalize(recognised);
+        let heard: Vec<&str> = norm
+            .split(' ')
+            .filter(|w| !w.is_empty() && *w != "unk")
+            .collect();
+        if self.words.is_empty() || heard.is_empty() {
+            return Verdict::Nothing;
+        }
+        let same =
+            heard.len() == self.words.len() && heard.iter().zip(&self.words).all(|(a, b)| a == b);
+        if !same {
+            let inside = heard
+                .windows(self.words.len())
+                .any(|w| w.iter().zip(&self.words).all(|(a, b)| a == b));
+            return if inside {
+                Verdict::NotAlone
+            } else {
+                Verdict::Different
+            };
+        }
+        if word_conf.map(|c| c < min_conf).unwrap_or(false) {
+            return Verdict::Unsure;
+        }
+        if let Some(last) = self.last_fire_ms {
+            if now_ms.saturating_sub(last) < self.cooldown_ms {
+                return Verdict::Cooldown;
+            }
+        }
+        self.last_fire_ms = Some(now_ms);
+        Verdict::Match
+    }
+
+    /// Looser check: the phrase anywhere in `recognised`, with the cool-down.
     pub fn matches(&mut self, recognised: &str, now_ms: u64) -> bool {
         if self.words.is_empty() {
             return false;
@@ -165,6 +224,22 @@ impl PhraseMatcher {
         self.last_fire_ms = Some(now_ms);
         true
     }
+}
+
+/// Why a finished utterance did or didn't save a clip.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Verdict {
+    Match,
+    /// Only `[unk]` / nothing usable was heard.
+    Nothing,
+    /// Something else was said.
+    Different,
+    /// The phrase was said inside a longer sentence.
+    NotAlone,
+    /// The phrase was heard, but the recogniser wasn't confident enough.
+    Unsure,
+    /// Heard again right after a clip was saved.
+    Cooldown,
 }
 
 /// Lower-case and clean a phrase for Vosk's grammar, without folding Turkish letters onto
@@ -198,23 +273,73 @@ pub fn grammar_phrase(phrase: &str, turkish: bool) -> String {
 /// Vosk grammar: only the trigger phrase (plus `[unk]`) can be recognised, which is both
 /// faster and far less prone to false triggers than free dictation.
 pub fn grammar_json(phrase: &str, turkish: bool) -> String {
-    serde_json::to_string(&[grammar_phrase(phrase, turkish).as_str(), "[unk]"])
-        .unwrap_or_else(|_| "[\"[unk]\"]".into())
+    grammar_json_with(phrase, turkish, &[])
 }
 
-#[derive(Debug, PartialEq, Eq)]
+/// Like [`grammar_json`], plus "decoy" words. With only the trigger to choose from, a small
+/// model maps almost any speech onto it; common everyday words (and the trigger's own words
+/// on their own) give that speech somewhere else to go. Callers should pass only words the
+/// model actually knows.
+pub fn grammar_json_with(phrase: &str, turkish: bool, decoys: &[String]) -> String {
+    let main = grammar_phrase(phrase, turkish);
+    let mut entries: Vec<String> = vec![main.clone(), "[unk]".into()];
+    for d in decoys {
+        let d = grammar_phrase(d, turkish);
+        if !d.is_empty() && d != main && !entries.contains(&d) {
+            entries.push(d);
+        }
+    }
+    serde_json::to_string(&entries).unwrap_or_else(|_| "[\"[unk]\"]".into())
+}
+
+/// Everyday words used as grammar decoys, per language. Short, frequent and phonetically
+/// varied, so ordinary talk and game chatter land on them instead of on the trigger.
+pub fn decoy_words(turkish: bool) -> &'static [&'static str] {
+    if turkish {
+        &[
+            "bir", "bu", "şu", "o", "ve", "ama", "ne", "evet", "hayır", "tamam", "yok", "var",
+            "gel", "git", "at", "ver", "bak", "dur", "koş", "vur", "öl", "kal", "olur", "oldu",
+            "abi", "kanka", "lan", "hadi", "şimdi", "burada", "orada", "sol", "sağ", "ileri",
+            "geri", "aşağı", "yukarı", "kilit", "klima", "kitap", "alın", "almak", "aldım", "kim",
+            "kip", "ilk", "ip", "al", "klip", "kayıt", "dikkat", "oyun", "takım",
+        ]
+    } else {
+        &[
+            "a", "the", "that", "this", "it", "and", "but", "yes", "no", "okay", "go", "come",
+            "left", "right", "back", "up", "down", "stop", "wait", "nice", "shoot", "reload",
+            "flip", "click", "clap", "lip", "chip", "clips", "cap", "hat", "cat", "what", "clip",
+            "save", "game", "team", "push", "run",
+        ]
+    }
+}
+
+#[derive(Debug, PartialEq)]
 pub struct Recognised {
     pub text: String,
     pub partial: bool,
+    /// Lowest per-word confidence, when the recogniser was asked for word details.
+    pub min_conf: Option<f32>,
 }
 
 /// Parse `{"text": "..."}` or `{"partial": "..."}` as produced by Vosk.
 pub fn parse_result(json: &str) -> Option<Recognised> {
     let v: serde_json::Value = serde_json::from_str(json).ok()?;
     if let Some(t) = v.get("text").and_then(|t| t.as_str()) {
+        let min_conf = v
+            .get("result")
+            .and_then(|r| r.as_array())
+            .and_then(|words| {
+                words
+                    .iter()
+                    .filter(|w| w.get("word").and_then(|x| x.as_str()) != Some("[unk]"))
+                    .filter_map(|w| w.get("conf").and_then(|c| c.as_f64()))
+                    .map(|c| c as f32)
+                    .reduce(f32::min)
+            });
         return Some(Recognised {
             text: t.to_string(),
             partial: false,
+            min_conf,
         });
     }
     v.get("partial")
@@ -222,6 +347,7 @@ pub fn parse_result(json: &str) -> Option<Recognised> {
         .map(|t| Recognised {
             text: t.to_string(),
             partial: true,
+            min_conf: None,
         })
 }
 
@@ -323,6 +449,28 @@ mod tests {
     }
 
     #[test]
+    fn utterance_must_be_just_the_phrase() {
+        let mut m = PhraseMatcher::new("klip al", 0);
+        assert!(m.matches_utterance("klip al", Some(0.95), 0.6, 1));
+        assert!(m.matches_utterance("[unk] klip al", None, 0.6, 2));
+        assert!(!m.matches_utterance("bu klip al dedim", Some(0.95), 0.6, 3));
+        assert!(!m.matches_utterance("klip", Some(0.95), 0.6, 4));
+        assert!(!m.matches_utterance("klip al", Some(0.4), 0.6, 5));
+    }
+
+    #[test]
+    fn decoys_are_added_without_duplicates() {
+        let decoys: Vec<String> = ["klip", "al", "klip al", "bir"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            grammar_json_with("Klip Al", true, &decoys),
+            "[\"klip al\",\"[unk]\",\"klip\",\"al\",\"bir\"]"
+        );
+    }
+
+    #[test]
     fn empty_phrase_never_matches() {
         let mut m = PhraseMatcher::new("  ", 0);
         assert!(!m.matches("anything", 0));
@@ -352,16 +500,23 @@ mod tests {
             parse_result("{\"text\" : \"clip that\"}"),
             Some(Recognised {
                 text: "clip that".into(),
-                partial: false
+                partial: false,
+                min_conf: None
             })
         );
         assert_eq!(
             parse_result("{\"partial\" : \"clip\"}"),
             Some(Recognised {
                 text: "clip".into(),
-                partial: true
+                partial: true,
+                min_conf: None
             })
         );
+        let detailed = parse_result(
+            "{\"result\":[{\"conf\":0.93,\"word\":\"klip\"},{\"conf\":0.41,\"word\":\"al\"}],\"text\":\"klip al\"}",
+        )
+        .unwrap();
+        assert_eq!(detailed.min_conf, Some(0.41));
         assert_eq!(parse_result("not json"), None);
         assert_eq!(parse_result("{\"other\": 1}"), None);
     }

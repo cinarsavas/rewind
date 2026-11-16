@@ -402,6 +402,10 @@ pub struct Config {
     pub low_power_ui: bool,
     /// Show video thumbnails in the clip list (uses Windows' own thumbnail cache).
     pub thumbnails: bool,
+    /// Thumbnail size on the Clips page, 0.75..=2.5.
+    pub clip_zoom: f32,
+    /// Play the end of a clip when hovering its thumbnail (needs the hover-preview add-on).
+    pub hover_preview: bool,
     /// Interface language. Always defaults to English, even for translated builds.
     pub language: Lang,
     /// Ask before deleting a clip. Turn off to delete straight to the Recycle Bin.
@@ -452,6 +456,8 @@ impl Default for Config {
             effects: EffectStyle::None,
             low_power_ui: false,
             thumbnails: true,
+            clip_zoom: 1.0,
+            hover_preview: true,
             language: Lang::English,
             confirm_delete: true,
             delete_permanently: false,
@@ -485,6 +491,11 @@ impl Config {
         self.buffer_max_mb = self.buffer_max_mb.clamp(128, 32_768);
         self.overlay_secs = self.overlay_secs.clamp(1, 10);
         self.voice.sensitivity = self.voice.sensitivity.clamp(0.0, 1.0);
+        self.clip_zoom = if self.clip_zoom.is_finite() {
+            self.clip_zoom.clamp(0.75, 2.5)
+        } else {
+            1.0
+        };
         if self.voice.phrase.trim().is_empty() {
             self.voice.phrase = default_phrase(Lang::from_id(&self.voice.language)).into();
         }
@@ -577,6 +588,8 @@ impl Config {
         same.effects = self.effects;
         same.low_power_ui = self.low_power_ui;
         same.thumbnails = self.thumbnails;
+        same.clip_zoom = self.clip_zoom;
+        same.hover_preview = self.hover_preview;
         same.language = self.language;
         same.confirm_delete = self.confirm_delete;
         same.delete_permanently = self.delete_permanently;

@@ -22,6 +22,7 @@ use crate::audio::AudioDevice;
 use crate::packs::IndexState;
 use crate::thumbs::Thumbs;
 use crate::voice::VoiceStatus;
+use rewind_core::voice::Verdict;
 
 pub fn draw(app: &mut RewindApp, root: &mut egui::Ui) {
     let ctx = root.ctx().clone();
@@ -201,6 +202,10 @@ fn failure(root: &mut egui::Ui, msg: &str) {
             ui.add_space(6.0);
             ui.set_max_width(580.0);
             ui.label(RichText::new(msg).color(pal().muted));
+            ui.add_space(6.0);
+            if text_button(ui, Some(Icon::Copy), "Copy error", true).clicked() {
+                ui.ctx().copy_text(msg.to_string());
+            }
             ui.add_space(10.0);
             ui.label(muted("Check your internet connection (needed once to fetch OBS) and restart the app."));
         });
@@ -515,7 +520,9 @@ fn replay_page(app: &mut RewindApp, ui: &mut egui::Ui, ctx: &egui::Context) {
         }
     });
 
-    // Hotkey problems are real warnings; encoder/capture notes are calm information.
+    // Hotkey problems are real warnings; encoder/capture notes are calm information. Both
+    // have a copy button so they can be pasted into a bug report.
+    let mut copy: Option<String> = None;
     for w in &app.hotkey_errors {
         egui::Frame::new()
             .fill(pal().warn_bg)
@@ -524,7 +531,14 @@ fn replay_page(app: &mut RewindApp, ui: &mut egui::Ui, ctx: &egui::Context) {
             .inner_margin(Margin::same(12))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                ui.label(RichText::new(format!("⚠  {}", t(w))).color(pal().warn));
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(format!("⚠  {}", t(w))).color(pal().warn));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if icon_button(ui, Icon::Copy, "Copy", pal().warn).clicked() {
+                            copy = Some(t(w).to_string());
+                        }
+                    });
+                });
             });
     }
     if let Some(engine) = &app.engine {
@@ -536,9 +550,19 @@ fn replay_page(app: &mut RewindApp, ui: &mut egui::Ui, ctx: &egui::Context) {
                 .inner_margin(Margin::same(12))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    ui.label(RichText::new(note).color(pal().accent));
+                    ui.horizontal(|ui| {
+                        ui.add(egui::Label::new(RichText::new(note).color(pal().accent)).wrap());
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if icon_button(ui, Icon::Copy, "Copy", pal().accent).clicked() {
+                                copy = Some(note.clone());
+                            }
+                        });
+                    });
                 });
         }
+    }
+    if let Some(text) = copy {
+        app.copy_to_clipboard(text);
     }
 
     let cpu_encoding = app.engine.as_ref().map(|e| e.cpu_encoding).unwrap_or(false);
@@ -582,24 +606,35 @@ fn replay_page(app: &mut RewindApp, ui: &mut egui::Ui, ctx: &egui::Context) {
         });
         return;
     }
-    let (want_thumb, can_trim) = (app.cfg.thumbnails, app.ffmpeg.is_some());
-    let permanent = app.cfg.delete_permanently;
+    let preview_exe = app.preview_ffmpeg();
+    let opts = RowOpts {
+        want_thumb: app.cfg.thumbnails,
+        can_trim: app.ffmpeg.is_some(),
+        permanent: app.cfg.delete_permanently,
+        zoom: 1.0,
+        preview: preview_exe.as_deref(),
+    };
     let mut action: Option<(usize, ClipAction)> = None;
+    let mut any_preview = false;
     for i in 0..app.clip_rows.len().min(3) {
         let reveal = app.row_reveal(i);
         let row = &app.clip_rows[i];
-        if let Some(a) = clip_row(
+        let (a, previewing) = clip_row(
             ui,
             &row.clip,
             &row.meta,
             &mut app.thumbs,
-            want_thumb,
-            can_trim,
-            permanent,
+            &mut app.previews,
+            opts,
             reveal,
-        ) {
+        );
+        any_preview |= previewing;
+        if let Some(a) = a {
             action = Some((i, a));
         }
+    }
+    if !any_preview {
+        app.previews.unhover();
     }
     if let Some((i, a)) = action {
         let clip = app.clip_rows[i].clip.clone();
@@ -674,18 +709,38 @@ fn delete_clip_now(app: &mut RewindApp, clip: &Clip) {
     app.refresh_clips(true);
 }
 
+/// How clip rows are drawn; the same for every row on a page.
+#[derive(Clone, Copy)]
+struct RowOpts<'a> {
+    want_thumb: bool,
+    can_trim: bool,
+    permanent: bool,
+    /// Thumbnail size multiplier (Clips page zoom).
+    zoom: f32,
+    /// ffmpeg from the hover-preview add-on, when it's installed and switched on.
+    preview: Option<&'a std::path::Path>,
+}
+
 /// One clip row. Borrows the row and the thumbnail cache instead of the whole app, so the
-/// caller can iterate the library without cloning it every frame.
+/// caller can iterate the library without cloning it every frame. Returns the clicked action
+/// and whether the thumbnail is being hovered for a preview.
 fn clip_row(
     ui: &mut egui::Ui,
     clip: &Clip,
     meta: &str,
     thumbs: &mut Thumbs,
-    want_thumb: bool,
-    can_trim: bool,
-    permanent: bool,
+    previews: &mut crate::preview::Previews,
+    opts: RowOpts,
     reveal: f32,
-) -> Option<ClipAction> {
+) -> (Option<ClipAction>, bool) {
+    let RowOpts {
+        want_thumb,
+        can_trim,
+        permanent,
+        zoom,
+        preview,
+    } = opts;
+    let mut previewing = false;
     let mut action = None;
     let prev_opacity = ui.opacity();
     if reveal < 1.0 {
@@ -700,11 +755,11 @@ fn clip_row(
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
                 let size = if want_thumb {
-                    vec2(112.0, 63.0)
+                    vec2(112.0, 63.0) * zoom
                 } else {
                     vec2(46.0, 46.0)
                 };
-                let (r, _) = ui.allocate_exact_size(size, Sense::hover());
+                let (r, thumb_resp) = ui.allocate_exact_size(size, Sense::hover());
                 let tex = if want_thumb {
                     thumbs.get(ui.ctx(), &clip.path, clip.modified)
                 } else {
@@ -721,6 +776,55 @@ fn clip_row(
                         pal().deep,
                     );
                     paint_icon(ui.painter(), Icon::Play, r.center(), 18.0, pal().accent);
+                }
+                if let (Some(ffmpeg), true) = (preview, want_thumb && thumb_resp.hovered()) {
+                    previewing = true;
+                    let ctx = ui.ctx().clone();
+                    match previews.hover(&ctx, &clip.path, clip.modified, ffmpeg) {
+                        crate::preview::Frame::Ready(tex, progress) => {
+                            egui::Image::new((tex.id(), size))
+                                .corner_radius(CornerRadius::same(10))
+                                .paint_at(ui, r);
+                            let bar = egui::Rect::from_min_max(
+                                pos2(r.left() + 6.0, r.bottom() - 6.0),
+                                pos2(r.right() - 6.0, r.bottom() - 3.0),
+                            );
+                            ui.painter().rect_filled(
+                                bar,
+                                CornerRadius::same(2),
+                                Color32::from_black_alpha(120),
+                            );
+                            ui.painter().rect_filled(
+                                egui::Rect::from_min_max(
+                                    bar.min,
+                                    pos2(bar.left() + bar.width() * progress, bar.bottom()),
+                                ),
+                                CornerRadius::same(2),
+                                pal().accent,
+                            );
+                        }
+                        crate::preview::Frame::Loading => {
+                            ui.painter().rect_filled(
+                                r,
+                                CornerRadius::same(10),
+                                Color32::from_black_alpha(110),
+                            );
+                            let t = ui.input(|i| i.time) as f32;
+                            for k in 0..3 {
+                                let a = ((t * 3.0 - k as f32 * 0.6).sin() * 0.5 + 0.5) * 0.8 + 0.2;
+                                ui.painter().circle_filled(
+                                    pos2(r.center().x + (k as f32 - 1.0) * 9.0, r.center().y),
+                                    2.6,
+                                    pal().accent.gamma_multiply(a),
+                                );
+                            }
+                        }
+                        crate::preview::Frame::Failed(e) => {
+                            thumb_resp
+                                .clone()
+                                .on_hover_text(format!("{}: {e}", t("No preview")));
+                        }
+                    }
                 }
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
@@ -769,6 +873,7 @@ fn clip_row(
     if reveal < 1.0 {
         ui.set_opacity(prev_opacity);
     }
+    let action = (action, previewing);
 
     // Hover gets a soft accent border plus a faint outer glow. The fill stays put so there
     // is no layout cost; the glow is a wide translucent stroke, drawn only while hovered.
@@ -820,6 +925,37 @@ fn clips_page(app: &mut RewindApp, ui: &mut egui::Ui) {
             app.mark_filter_dirty();
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if app.cfg.thumbnails {
+                // Thumbnail size. Saved right away (no Apply needed); Ctrl + mouse wheel on
+                // the list does the same.
+                let before = app.cfg.clip_zoom;
+                let mut zoom = before;
+                let zr = ui
+                    .add(
+                        egui::Slider::new(&mut zoom, 0.75..=2.5)
+                            .show_value(false)
+                            .trailing_fill(true),
+                    )
+                    .on_hover_text(t("Thumbnail size (Ctrl + mouse wheel)"));
+                ui.label(muted("Size"));
+                let wheel = ui.input(|i| {
+                    if i.modifiers.command {
+                        i.zoom_delta()
+                    } else {
+                        1.0
+                    }
+                });
+                if wheel != 1.0 {
+                    zoom = (zoom * wheel).clamp(0.75, 2.5);
+                }
+                if zoom != before {
+                    app.cfg.clip_zoom = zoom;
+                    app.draft.clip_zoom = zoom;
+                }
+                if zr.drag_stopped() || (zoom != before && !zr.dragged()) {
+                    app.save_quietly();
+                }
+            }
             if icon_button(ui, Icon::Folder, "Open clips folder", pal().muted).clicked() {
                 let _ = std::fs::create_dir_all(&app.cfg.output_dir);
                 let _ = opener::open(&app.cfg.output_dir);
@@ -849,8 +985,15 @@ fn clips_page(app: &mut RewindApp, ui: &mut egui::Ui) {
         });
         return;
     }
-    let (want_thumb, can_trim) = (app.cfg.thumbnails, app.ffmpeg.is_some());
-    let permanent = app.cfg.delete_permanently;
+    let preview_exe = app.preview_ffmpeg();
+    let opts = RowOpts {
+        want_thumb: app.cfg.thumbnails,
+        can_trim: app.ffmpeg.is_some(),
+        permanent: app.cfg.delete_permanently,
+        zoom: app.cfg.clip_zoom,
+        preview: preview_exe.as_deref(),
+    };
+    let mut any_preview = false;
     let animate = animations_on() && !app.cfg.low_power_ui;
     let shown = app.list_shown;
     let mut action: Option<(usize, ClipAction)> = None;
@@ -872,21 +1015,25 @@ fn clips_page(app: &mut RewindApp, ui: &mut egui::Ui) {
         }
         let reveal = row_reveal_at(shown, pos, animate);
         let row = &app.clip_rows[i];
-        if let Some(a) = clip_row(
+        let (a, previewing) = clip_row(
             ui,
             &row.clip,
             &row.meta,
             &mut app.thumbs,
-            want_thumb,
-            can_trim,
-            permanent,
+            &mut app.previews,
+            opts,
             reveal,
-        ) {
+        );
+        any_preview |= previewing;
+        if let Some(a) = a {
             action = Some((i, a));
         }
         row_h = ui.cursor().top() - top;
     }
     app.clip_row_h = row_h;
+    if !any_preview {
+        app.previews.unhover();
+    }
     if let Some((i, a)) = action {
         let clip = app.clip_rows[i].clip.clone();
         apply_clip_action(app, a, &clip);
@@ -1026,7 +1173,10 @@ fn settings_page(app: &mut RewindApp, ui: &mut egui::Ui, _ctx: &egui::Context) {
     section_title(ui, "PERFORMANCE");
     ui.columns(3, |c| {
         for (i, p) in Preset::ALL.iter().enumerate() {
-            if preset_card(&mut c[i], p.label(), p.blurb()) {
+            // A little nod to the friend whose laptop this preset was tuned on, Turkish UI only.
+            let note = (*p == Preset::LowEnd && super::i18n::lang() == Lang::Turkish)
+                .then_some("Demirhan'ın PC'si");
+            if preset_card(&mut c[i], p.label(), p.blurb(), note) {
                 app.draft.apply_preset(*p);
             }
         }
@@ -1461,6 +1611,21 @@ fn about_page(app: &mut RewindApp, ui: &mut egui::Ui) {
         ui.label(muted("Typeface: Inter, SIL Open Font License 1.1."));
     });
 
+    card(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                ui.label(bold("Something not working?"));
+                ui.label(muted("Copies version, settings, encoder, voice status and recent errors (no clips, no personal files) so you can paste them into a bug report."));
+            });
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if text_button(ui, Some(Icon::Copy), "Copy diagnostics", true).clicked() {
+                    let text = app.diagnostics();
+                    app.copy_to_clipboard(text);
+                }
+            });
+        });
+    });
+
     section_title(ui, "UPDATES");
     card(ui, |ui| {
         ui.horizontal(|ui| {
@@ -1483,6 +1648,7 @@ fn about_page(app: &mut RewindApp, ui: &mut egui::Ui) {
                 app.check_updates();
             }
             let mut install: Option<crate::updates::UpdateInfo> = None;
+            let mut copy: Option<String> = None;
             match &app.update_state {
                 UpdateState::Idle => {
                     ui.label(muted("Not checked yet."));
@@ -1530,9 +1696,11 @@ fn about_page(app: &mut RewindApp, ui: &mut egui::Ui) {
                     );
                 }
                 UpdateState::InstallFailed(info, e) => {
-                    ui.label(
-                        RichText::new(tf("Couldn't update: {e}", &[("e", e)])).color(pal().danger),
-                    );
+                    let msg = tf("Couldn't update: {e}", &[("e", e)]);
+                    ui.label(RichText::new(&msg).color(pal().danger));
+                    if icon_button(ui, Icon::Copy, "Copy", pal().danger).clicked() {
+                        copy = Some(msg);
+                    }
                     if text_button(ui, None, "Try again", true).clicked() {
                         install = Some(info.clone());
                     }
@@ -1542,11 +1710,16 @@ fn about_page(app: &mut RewindApp, ui: &mut egui::Ui) {
                     }
                 }
                 UpdateState::Failed(e) => {
-                    ui.label(
-                        RichText::new(tf("Couldn't check: {e}", &[("e", e)])).color(pal().danger),
-                    );
+                    let msg = tf("Couldn't check: {e}", &[("e", e)]);
+                    ui.label(RichText::new(&msg).color(pal().danger));
+                    if icon_button(ui, Icon::Copy, "Copy", pal().danger).clicked() {
+                        copy = Some(msg);
+                    }
                 }
             };
+            if let Some(text) = copy.take() {
+                app.copy_to_clipboard(text);
+            }
             if let Some(info) = install {
                 app.install_update(info);
             }
@@ -1829,7 +2002,15 @@ fn delete_window(app: &mut RewindApp, ctx: &egui::Context) {
     }
 }
 
-fn toast(app: &RewindApp, ctx: &egui::Context) {
+fn toast(app: &mut RewindApp, ctx: &egui::Context) {
+    let mut copy: Option<String> = None;
+    toast_inner(app, ctx, &mut copy);
+    if let Some(text) = copy {
+        app.copy_to_clipboard(text);
+    }
+}
+
+fn toast_inner(app: &RewindApp, ctx: &egui::Context, copy: &mut Option<String>) {
     let Some(t) = &app.toast else { return };
     // Reuse the easing that already drives the over-the-game toast: slide up on entry,
     // fade in and out. The loop's repaint cadence follows [`RewindApp::toast_alpha`].
@@ -1857,7 +2038,7 @@ fn toast(app: &RewindApp, ctx: &egui::Context) {
                 .corner_radius(CornerRadius::same(12))
                 .inner_margin(Margin::symmetric(16, 12))
                 .show(ui, |ui| {
-                    ui.set_max_width(420.0);
+                    ui.set_max_width(460.0);
                     ui.horizontal(|ui| {
                         let col = if t.is_error {
                             pal().danger
@@ -1879,12 +2060,26 @@ fn toast(app: &RewindApp, ctx: &egui::Context) {
                             col,
                         );
                         ui.label(RichText::new(&t.text).color(col));
+                        // Errors can be copied straight from the toast for a bug report.
+                        if t.is_error && icon_button(ui, Icon::Copy, "Copy", col).clicked() {
+                            *copy = Some(t.text.clone());
+                        }
                     });
                 });
         });
 }
 
-fn preset_card(ui: &mut egui::Ui, title: &str, blurb: &str) -> bool {
+/// "Last heard" line in the voice card.
+fn card_row_heard(ui: &mut egui::Ui, heard: &str, why: &str, color: Color32) {
+    ui.add_space(4.0);
+    ui.horizontal_wrapped(|ui| {
+        ui.label(muted("Last heard:"));
+        ui.label(bold(heard).size(13.5));
+        ui.label(RichText::new(why).color(color).size(13.0));
+    });
+}
+
+fn preset_card(ui: &mut egui::Ui, title: &str, blurb: &str, note: Option<&str>) -> bool {
     let size = vec2(ui.available_width(), 82.0);
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
     let anim = ui
@@ -1901,13 +2096,22 @@ fn preset_card(ui: &mut egui::Ui, title: &str, blurb: &str) -> bool {
         Stroke::new(1.0, pal().stroke.lerp_to_gamma(pal().accent, 0.6 * anim)),
         egui::StrokeKind::Inside,
     );
-    ui.painter().text(
+    let title_rect = ui.painter().text(
         pos2(rect.left() + 16.0, rect.top() + 18.0),
         egui::Align2::LEFT_CENTER,
         t(title),
         egui::FontId::new(15.5, semibold_family()),
         pal().text,
     );
+    if let Some(note) = note {
+        ui.painter().text(
+            pos2(title_rect.right() + 6.0, rect.top() + 18.5),
+            egui::Align2::LEFT_CENTER,
+            note,
+            egui::FontId::proportional(11.0),
+            pal().faint,
+        );
+    }
     let galley = ui.painter().layout(
         t(blurb).to_string(),
         egui::FontId::proportional(12.5),
@@ -2179,7 +2383,12 @@ fn addons_page(app: &mut RewindApp, ui: &mut egui::Ui) {
                     };
                     status_text(ui, &message, pal().danger)
                 }
-                Some((VoiceStatus::Error(e), _)) => status_text(ui, &e, pal().danger),
+                Some((VoiceStatus::Error(e), _)) => {
+                    status_text(ui, &e, pal().danger);
+                    if icon_button(ui, Icon::Copy, "Copy", pal().danger).clicked() {
+                        ui.ctx().copy_text(e.clone());
+                    }
+                }
                 Some((VoiceStatus::Stopped, _)) | None => status_text(
                     ui,
                     if app.cfg.voice.enabled {
@@ -2191,10 +2400,73 @@ fn addons_page(app: &mut RewindApp, ui: &mut egui::Ui) {
                 ),
             }
         });
+        // Voice test: what the recogniser made of the last thing you said, and why it did
+        // or didn't save a clip. Updated only when you finish speaking.
+        if let Some(h) = app.voice_handle().and_then(|v| v.shared.last_heard()) {
+            let (why, color) = match h.verdict {
+                Verdict::Match => ("Saved a clip", pal().accent),
+                Verdict::NotAlone => ("Ignored: say it on its own", pal().warn),
+                Verdict::Unsure => ("Ignored: not sure enough, say it clearer", pal().warn),
+                Verdict::Cooldown => ("Ignored: a clip was just saved", pal().muted),
+                Verdict::Different | Verdict::Nothing => ("Not the phrase", pal().muted),
+            };
+            let conf = h
+                .conf
+                .map(|c| format!(" · {:.0}%", c * 100.0))
+                .unwrap_or_default();
+            card_row_heard(ui, &format!("\"{}\"{conf}", h.text), t(why), color);
+        }
     });
-    ui.label(muted("Tip: press Apply after changing the phrase or language. Say it a little after you finish the moment you want to keep."));
+    ui.label(muted("Tip: say the phrase on its own, with a short pause before and after; it doesn't count inside a longer sentence. Press Apply after changing the phrase or language."));
 
     // ---- Celebration effects
+    section_title(ui, "HOVER PREVIEWS");
+    card(ui, |ui| {
+        let installed = app.packs.preview_ffmpeg().is_some();
+        let downloadable = index.as_ref().and_then(|i| i.preview.as_ref()).is_some();
+        let size = index
+            .as_ref()
+            .and_then(|i| i.preview.as_ref())
+            .map(|f| human_size(f.size_bytes))
+            .unwrap_or_default();
+        let hint = if installed {
+            "Hover a clip's thumbnail to play its last 20 seconds. Also enables trimming."
+                .to_string()
+        } else if downloadable {
+            tf(
+                "Plays the last 20 seconds of a clip when you hover its thumbnail, and enables trimming. Uses ffmpeg ({size}).",
+                &[("size", &size)],
+            )
+        } else {
+            "Not available from this release.".to_string()
+        };
+        setting_row(ui, "Clip previews", &hint, !installed, |ui| {
+            pack_controls(
+                app,
+                ui,
+                crate::packs::KEY_PREVIEW,
+                installed,
+                downloadable,
+                |a| a.packs.install_preview(),
+                |a| {
+                    a.packs.remove_preview();
+                    a.refresh_preview_exe();
+                },
+            );
+        });
+        if installed {
+            setting_row(
+                ui,
+                "Play previews on hover",
+                "Frames are made once per clip, at low priority, and cached.",
+                true,
+                |ui| {
+                    toggle(ui, &mut app.draft.hover_preview);
+                },
+            );
+        }
+    });
+
     section_title(ui, "CELEBRATION EFFECTS");
     card(ui, |ui| {
         let installed = app.packs.effects.clone();

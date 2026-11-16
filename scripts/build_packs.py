@@ -10,6 +10,7 @@ Produces, in --out:
   voice-<id>.zip       one Vosk language model per language (flat)
   theme-<id>.toml      every file in /themes
   effects-<id>.toml    downloadable toggle celebrations
+  preview-ffmpeg.zip   ffmpeg.exe for hover previews (and trimming), from BtbN/FFmpeg-Builds
   packs.toml           index with a SHA-256 for every file, read by the app (Add-ons page)
 """
 import argparse
@@ -32,6 +33,10 @@ LANGUAGES = {
     "tr": ("Türkçe", "vosk-model-small-tr-0.3"),
 }
 MODEL_URL = "https://alphacephei.com/vosk/models/{name}.zip"
+
+# Static GPL build of ffmpeg for Windows; only ffmpeg.exe is repackaged. The SHA-256 in
+# packs.toml is computed from our own zip, so a moving "latest" build is fine.
+FFMPEG_URL = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
 
 # Celebration painters compiled into the app; a pack simply unlocks them.
 EFFECT_STYLES = ["shine", "sparkle", "creeper", "ripple", "confetti", "comet", "bloom", "bolt"]
@@ -105,6 +110,22 @@ def main() -> int:
             flat_zip(root, p)
             lines += ["[[voice]]", f"id = {toml_str(lang)}", f"name = {toml_str(label)}",
                       f"url = {toml_str(f'{base}/{p.name}')}", f"sha256 = {toml_str(sha256(p))}", f"size_bytes = {p.stat().st_size}", ""]
+
+        print("Hover previews (ffmpeg)")
+        fz = zipfile.ZipFile(io.BytesIO(fetch(FFMPEG_URL)))
+        exe = next((n for n in fz.namelist() if n.endswith("/bin/ffmpeg.exe") or n == "ffmpeg.exe"), None)
+        if exe is None:
+            print("error: ffmpeg.exe not found in the FFmpeg build", file=sys.stderr)
+            return 1
+        pdir = tmp / "preview"
+        pdir.mkdir()
+        (pdir / "ffmpeg.exe").write_bytes(fz.read(exe))
+        lic = next((n for n in fz.namelist() if n.endswith("/LICENSE.txt")), None)
+        if lic:
+            (pdir / "LICENSE.txt").write_bytes(fz.read(lic))
+        p = out / "preview-ffmpeg.zip"
+        flat_zip(pdir, p)
+        lines += ["[preview]", f"url = {toml_str(f'{base}/{p.name}')}", f"sha256 = {toml_str(sha256(p))}", f"size_bytes = {p.stat().st_size}", ""]
 
     effects_file = out / "effects-basic.toml"
     styles = ", ".join(f'"{s}"' for s in EFFECT_STYLES)

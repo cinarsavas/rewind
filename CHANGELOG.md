@@ -2,6 +2,17 @@
 
 All notable changes are listed here. The section for a tag becomes that release's notes.
 
+## [0.3.3]
+
+### Added
+- **Hover previews (add-on).** Install **Clip previews** from Add-ons and hovering a clip's thumbnail plays its last 20 seconds as a quick loop, with a progress line. Frames are made once per clip by ffmpeg at below-normal priority with GPU decoding, cached on disk, and only the hovered clip is kept in memory, so it doesn't slow down the PC or a running game. The add-on also enables **Trim** when ffmpeg isn't installed elsewhere.
+- **Bigger thumbnails.** The Clips page has a **Size** slider (or Ctrl + mouse wheel) to make thumbnails up to 2.5× larger. It's remembered without pressing Apply.
+- **Voice test.** The voice card shows what the recogniser heard last, how sure it was, and whether it saved a clip or why not ("say it on its own", "say it clearer"…).
+- **Copy anything that matters.** Error toasts, the start-up error screen, encoder/capture notes, hotkey warnings, voice errors and update errors all have a copy button, and About → **Copy diagnostics** copies version, settings, encoder, voice status and recent errors for bug reports.
+
+### Fixed
+- **Voice clipping no longer saves clips you didn't ask for**, especially in Turkish. The phrase now has to be said on its own: it is matched only on finished sentences (not the recogniser's running guesses), it doesn't count inside a longer sentence, and each word must be recognised with good confidence. Everyday words are added to the recogniser's vocabulary as decoys, so normal talk and game chatter land on them instead of being forced onto "klip al" / "clip that". Clips are saved about half a second after you finish the phrase.
+
 ## [0.3.2]
 
 ### Added

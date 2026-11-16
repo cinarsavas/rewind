@@ -17,11 +17,16 @@ use eframe::egui;
 use libloading::Library;
 use rewind_core::config::VoiceConfig;
 use rewind_core::i18n::{default_phrase, Lang};
-use rewind_core::voice::{grammar_json, grammar_phrase, parse_result, PhraseMatcher, VoiceGate};
+use rewind_core::voice::{
+    decoy_words, grammar_json_with, grammar_phrase, parse_result, PhraseMatcher, Verdict, VoiceGate,
+};
 use wasapi::{initialize_mta, DeviceEnumerator, Direction, SampleType, StreamMode, WaveFormat};
 
 const SAMPLE_RATE: usize = 16_000;
 const CHUNK_FRAMES: usize = 1_600; // 100 ms
+/// Lowest per-word confidence that still counts as the trigger. Small models are sure of a
+/// clearly spoken phrase (usually 0.9+) and unsure of the guesses that used to save clips.
+const MIN_WORD_CONF: f32 = 0.65;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VoiceStatus {
@@ -42,10 +47,19 @@ pub struct PhraseWarning {
     pub suggestion: &'static str,
 }
 
+/// The last finished thing the recogniser heard, for the voice test readout.
+#[derive(Clone, Debug)]
+pub struct Heard {
+    pub text: String,
+    pub conf: Option<f32>,
+    pub verdict: Verdict,
+}
+
 pub struct VoiceShared {
     pub stop: AtomicBool,
     level_bits: AtomicU32,
     pub status: Mutex<VoiceStatus>,
+    heard: Mutex<Option<Heard>>,
 }
 
 impl VoiceShared {
@@ -57,6 +71,9 @@ impl VoiceShared {
             .lock()
             .map(|s| s.clone())
             .unwrap_or(VoiceStatus::Stopped)
+    }
+    pub fn last_heard(&self) -> Option<Heard> {
+        self.heard.lock().ok().and_then(|h| h.clone())
     }
     fn set_status(&self, s: VoiceStatus) {
         if let Ok(mut g) = self.status.lock() {
@@ -96,8 +113,11 @@ struct Vosk {
     rec_free: unsafe extern "C" fn(*mut c_void),
     accept: unsafe extern "C" fn(*mut c_void, *const i16, c_int) -> c_int,
     result: unsafe extern "C" fn(*mut c_void) -> *const c_char,
-    partial: unsafe extern "C" fn(*mut c_void) -> *const c_char,
     reset: unsafe extern "C" fn(*mut c_void),
+    /// Optional: per-word confidences in results, used to reject shaky matches.
+    set_words: Option<unsafe extern "C" fn(*mut c_void, c_int)>,
+    /// Optional: flush the utterance when the noise gate closes.
+    final_result: Option<unsafe extern "C" fn(*mut c_void) -> *const c_char>,
 }
 
 impl Vosk {
@@ -130,8 +150,15 @@ impl Vosk {
                 rec_free: sym!("vosk_recognizer_free"),
                 accept: sym!("vosk_recognizer_accept_waveform_s"),
                 result: sym!("vosk_recognizer_result"),
-                partial: sym!("vosk_recognizer_partial_result"),
                 reset: sym!("vosk_recognizer_reset"),
+                set_words: lib
+                    .get(b"vosk_recognizer_set_words\0")
+                    .ok()
+                    .map(|symbol| *symbol),
+                final_result: lib
+                    .get(b"vosk_recognizer_final_result\0")
+                    .ok()
+                    .map(|symbol| *symbol),
                 _lib: lib,
             })
         }
@@ -204,6 +231,7 @@ pub fn start(
         stop: AtomicBool::new(false),
         level_bits: AtomicU32::new(0),
         status: Mutex::new(VoiceStatus::Starting),
+        heard: Mutex::new(None),
     });
     let (tx, rx) = channel();
     let (cfg, sh) = (cfg.clone(), shared.clone());
@@ -278,7 +306,22 @@ fn run(
         }
     }
 
-    let grammar = CString::new(grammar_json(&cfg.phrase, turkish)).map_err(|_| "bad phrase")?;
+    // Decoys the model knows: the trigger's own words on their own plus everyday words, so
+    // ordinary speech has somewhere to land other than the trigger.
+    let mut decoys: Vec<String> = words.split(' ').map(String::from).collect();
+    decoys.extend(decoy_words(turkish).iter().map(|w| w.to_string()));
+    if let Some(find_word) = vosk.find_word {
+        decoys.retain(|w| {
+            CString::new(w.as_str())
+                .map(|c| unsafe { find_word(model, c.as_ptr()) } >= 0)
+                .unwrap_or(false)
+        });
+    } else {
+        // Can't check the vocabulary: an unknown word would make the grammar fail to load.
+        decoys.clear();
+    }
+    let grammar =
+        CString::new(grammar_json_with(&cfg.phrase, turkish, &decoys)).map_err(|_| "bad phrase")?;
     let mut rec = unsafe { (vosk.rec_new_grm)(model, SAMPLE_RATE as f32, grammar.as_ptr()) };
     if rec.is_null() {
         // A model without grammar support still recognises free speech; the phrase matcher
@@ -288,6 +331,9 @@ fn run(
     if rec.is_null() {
         unsafe { (vosk.model_free)(model) };
         return Err("couldn't start the recogniser".into());
+    }
+    if let Some(set_words) = vosk.set_words {
+        unsafe { set_words(rec, 1) };
     }
     let outcome = listen(&vosk, rec, cfg, device_id, sh, tx, ctx);
     unsafe {
@@ -366,25 +412,45 @@ fn listen(
             let audio = gate.push(&samples);
             sh.level_bits
                 .store(gate.level().to_bits(), Ordering::Relaxed);
+            // Only finished utterances count. Partial results are the recogniser's running
+            // guess and were the main source of clips nobody asked for.
+            let mut check = |json: String| {
+                if let Some(r) = parse_result(&json) {
+                    let verdict = matcher.judge(
+                        &r.text,
+                        r.min_conf,
+                        MIN_WORD_CONF,
+                        started.elapsed().as_millis() as u64,
+                    );
+                    if verdict == Verdict::Match {
+                        let _ = tx.send(());
+                    }
+                    if verdict != Verdict::Nothing {
+                        // Shown on the Add-ons page so people can see why it did or didn't
+                        // fire. Only written after a finished utterance: no extra wake-ups.
+                        if let Ok(mut h) = sh.heard.lock() {
+                            *h = Some(Heard {
+                                text: r.text.clone(),
+                                conf: r.min_conf,
+                                verdict,
+                            });
+                        }
+                        ctx.request_repaint();
+                    }
+                }
+            };
             if let Some(audio) = audio {
                 let accepted = unsafe { (vosk.accept)(rec, audio.as_ptr(), audio.len() as c_int) };
-                let json = unsafe {
-                    c_str(if accepted == 1 {
-                        (vosk.result)(rec)
-                    } else {
-                        (vosk.partial)(rec)
-                    })
-                };
-                if let Some(r) = parse_result(&json) {
-                    if matcher.matches(&r.text, started.elapsed().as_millis() as u64) {
-                        let _ = tx.send(());
-                        ctx.request_repaint();
-                        unsafe { (vosk.reset)(rec) };
-                    }
+                if accepted == 1 {
+                    check(unsafe { c_str((vosk.result)(rec)) });
                 }
             }
             if was_open && !gate.is_open() {
-                unsafe { (vosk.reset)(rec) }; // speech ended; start the next utterance clean
+                // Speech ended: take what's left of the utterance, then start clean.
+                if let Some(final_result) = vosk.final_result {
+                    check(unsafe { c_str(final_result(rec)) });
+                }
+                unsafe { (vosk.reset)(rec) };
             }
             was_open = gate.is_open();
         }

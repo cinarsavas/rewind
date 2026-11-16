@@ -284,8 +284,8 @@ pub fn t(s: &str) -> &str {
         "Starting…" => "Başlıyor…",
         "Not running" => "Çalışmıyor",
         "Retry" => "Yeniden dene",
-        "Tip: press Apply after changing the phrase or language. Say it a little after you finish the moment you want to keep." => {
-            "İpucu: cümleyi veya dili değiştirdikten sonra Uygula'ya bas. Saklamak istediğin an bittikten hemen sonra söyle."
+        "Tip: say the phrase on its own, with a short pause before and after; it doesn't count inside a longer sentence. Press Apply after changing the phrase or language." => {
+            "İpucu: cümleyi tek başına, önünde ve arkasında kısa bir duraklamayla söyle; uzun bir cümlenin içinde sayılmaz. Cümleyi veya dili değiştirdikten sonra Uygula'ya bas."
         }
         "Installed" => "Kurulu",
         "Download" => "İndir",
@@ -373,6 +373,36 @@ pub fn t(s: &str) -> &str {
         }
         "Clip deleted" => "Klip silindi",
         "Update now" => "Şimdi güncelle",
+        "Size" => "Boyut",
+        "Thumbnail size (Ctrl + mouse wheel)" => "Küçük resim boyutu (Ctrl + fare tekerleği)",
+        "HOVER PREVIEWS" => "ÜZERİNE GELİNCE ÖNİZLEME",
+        "Clip previews" => "Klip önizlemeleri",
+        "Hover a clip's thumbnail to play its last 20 seconds. Also enables trimming." => {
+            "Son 20 saniyesini oynatmak için klibin küçük resminin üzerine gel. Kırpmayı da açar."
+        }
+        "Plays the last 20 seconds of a clip when you hover its thumbnail, and enables trimming. Uses ffmpeg ({size})." => {
+            "Küçük resmin üzerine gelince klibin son 20 saniyesini oynatır ve kırpmayı açar. ffmpeg kullanır ({size})."
+        }
+        "Not available from this release." => "Bu sürümde yok.",
+        "Play previews on hover" => "Üzerine gelince önizleme oynat",
+        "Frames are made once per clip, at low priority, and cached." => {
+            "Kareler her klip için bir kez, düşük öncelikle hazırlanır ve saklanır."
+        }
+        "No preview" => "Önizleme yok",
+        "Copy" => "Kopyala",
+        "Copy error" => "Hatayı kopyala",
+        "Copied to clipboard" => "Panoya kopyalandı",
+        "Copy diagnostics" => "Tanılama bilgisini kopyala",
+        "Something not working?" => "Bir şey çalışmıyor mu?",
+        "Copies version, settings, encoder, voice status and recent errors (no clips, no personal files) so you can paste them into a bug report." => {
+            "Sürüm, ayarlar, kodlayıcı, ses durumu ve son hataları kopyalar (klip ya da kişisel dosya yok), hata bildirimine yapıştırabilirsin."
+        }
+        "Last heard:" => "Son duyulan:",
+        "Saved a clip" => "Klip kaydedildi",
+        "Ignored: say it on its own" => "Sayılmadı: tek başına söyle",
+        "Ignored: not sure enough, say it clearer" => "Sayılmadı: emin olamadı, daha net söyle",
+        "Ignored: a clip was just saved" => "Sayılmadı: az önce klip kaydedildi",
+        "Not the phrase" => "Tetikleyici cümle değil",
         "Try again" => "Tekrar dene",
         "Updating Rewind" => "Rewind güncelleniyor",
         "Downloading version {v}…" => "{v} sürümü indiriliyor…",

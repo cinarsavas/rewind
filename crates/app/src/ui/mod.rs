@@ -186,6 +186,8 @@ pub struct RewindApp {
     pub saving: bool,
     pub last_saved: Option<PathBuf>,
     pub ffmpeg: Option<PathBuf>,
+    /// ffmpeg.exe from the hover-preview add-on, checked at start and after installs.
+    preview_exe: Option<PathBuf>,
     pub trim: Option<TrimState>,
     pub rename: Option<RenameState>,
     pub confirm_delete: Option<Clip>,
@@ -205,6 +207,7 @@ pub struct RewindApp {
     ctx: egui::Context,
     pub perf: Sampler,
     pub thumbs: Thumbs,
+    pub previews: crate::preview::Previews,
     pub packs: PackManager,
     voice: Option<VoiceHandle>,
     voice_running_cfg: Option<VoiceConfig>,
@@ -233,6 +236,8 @@ pub struct RewindApp {
     pub input_devices: Vec<crate::audio::AudioDevice>,
     pub update_state: UpdateState,
     update_auto_checked: bool,
+    /// The last few error messages, newest last, for "Copy diagnostics".
+    pub recent_errors: std::collections::VecDeque<(SystemTime, String)>,
 }
 
 impl RewindApp {
@@ -314,6 +319,7 @@ impl RewindApp {
                 .send_viewport_cmd(egui::ViewportCommand::Visible(false));
         }
         let just_updated = std::env::args().any(|a| a == "--updated");
+        let packs_ffmpeg = packs.preview_ffmpeg();
         Self {
             draft: cfg.clone(),
             cfg,
@@ -354,7 +360,8 @@ impl RewindApp {
             monitors: engine::list_monitors(),
             saving: false,
             last_saved: None,
-            ffmpeg: trim::find_ffmpeg(app_dir.as_deref()),
+            ffmpeg: trim::find_ffmpeg(app_dir.as_deref()).or_else(|| packs_ffmpeg.clone()),
+            preview_exe: packs_ffmpeg,
             trim: None,
             rename: None,
             confirm_delete: None,
@@ -369,6 +376,10 @@ impl RewindApp {
             ctx: cc.egui_ctx.clone(),
             perf: Sampler::new(),
             thumbs: Thumbs::new(cc.egui_ctx.clone()),
+            previews: crate::preview::Previews::new(
+                directories_dir().join("previews"),
+                cc.egui_ctx.clone(),
+            ),
             packs,
             voice: None,
             voice_running_cfg: None,
@@ -388,7 +399,35 @@ impl RewindApp {
             input_devices: crate::audio::input_devices(),
             update_state: UpdateState::Idle,
             update_auto_checked: false,
+            recent_errors: std::collections::VecDeque::new(),
         }
+    }
+
+    /// ffmpeg for hover previews, when the add-on is installed and previews are switched on.
+    pub fn preview_ffmpeg(&self) -> Option<PathBuf> {
+        if !self.cfg.hover_preview || !self.cfg.thumbnails {
+            return None;
+        }
+        self.preview_exe.clone()
+    }
+
+    /// Re-check the hover-preview add-on; it also gives trimming an ffmpeg if none was found.
+    pub fn refresh_preview_exe(&mut self) {
+        self.preview_exe = self.packs.preview_ffmpeg();
+        if self.ffmpeg.is_none() {
+            self.ffmpeg = self.preview_exe.clone();
+        } else if self.ffmpeg.as_ref().map(|p| !p.is_file()).unwrap_or(false) {
+            // The add-on was removed: fall back to whatever else is on the system.
+            let app_dir = std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+            self.ffmpeg = trim::find_ffmpeg(app_dir.as_deref()).or(self.preview_exe.clone());
+        }
+    }
+
+    /// Persist a setting changed outside the Apply flow (like the Clips page zoom).
+    pub fn save_quietly(&self) {
+        let _ = self.cfg.save_to(&self.cfg_path);
     }
 
     /// Re-read the Windows audio endpoints. Cheap enough to call from a button.
@@ -690,11 +729,148 @@ impl RewindApp {
     /// In-app toast only.
     pub fn notify(&mut self, text: impl Into<String>, is_error: bool) {
         let text = i18n::t(&text.into()).to_string();
+        if is_error {
+            if self.recent_errors.len() >= 20 {
+                self.recent_errors.pop_front();
+            }
+            self.recent_errors
+                .push_back((SystemTime::now(), text.clone()));
+        }
         self.toast = Some(Toast {
             text,
             is_error,
             at: Instant::now(),
         });
+    }
+
+    /// Put `text` on the clipboard and say so.
+    pub fn copy_to_clipboard(&mut self, text: String) {
+        self.ctx.copy_text(text);
+        self.notify(i18n::t("Copied to clipboard"), false);
+    }
+
+    /// Everything useful for a bug report, as plain text. Built only when asked for.
+    pub fn diagnostics(&self) -> String {
+        use std::fmt::Write;
+        let c = &self.cfg;
+        let mut out = String::new();
+        let _ = writeln!(out, "Rewind {}", env!("CARGO_PKG_VERSION"));
+        let _ = writeln!(
+            out,
+            "Install: {}",
+            if crate::updates::is_installed_copy() {
+                "installer"
+            } else {
+                "portable"
+            }
+        );
+        let _ = writeln!(
+            out,
+            "CPU: {} ({} threads)",
+            std::env::var("PROCESSOR_IDENTIFIER").unwrap_or_else(|_| "unknown".into()),
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(0)
+        );
+        let _ = writeln!(
+            out,
+            "This app: {:.0}% CPU, {} MB",
+            self.perf.cpu_pct, self.perf.mem_mb
+        );
+        let phase = match &self.phase {
+            Phase::Installing => "installing runtime".to_string(),
+            Phase::Starting { .. } => "starting".to_string(),
+            Phase::Ready => "ready".to_string(),
+            Phase::Failed(e) => format!("failed: {e}"),
+        };
+        let _ = writeln!(out, "State: {phase}");
+        if let Some(e) = &self.engine {
+            let _ = writeln!(
+                out,
+                "Encoder: {} (cpu: {})",
+                e.encoder_label, e.cpu_encoding
+            );
+            for n in &e.notes {
+                let _ = writeln!(out, "Note: {n}");
+            }
+        }
+        let _ = writeln!(
+            out,
+            "Replay buffer: {}",
+            if self.buffer_active() { "on" } else { "off" }
+        );
+        let _ = writeln!(
+            out,
+            "Video: {:?} {:?} {:?} {:?} {} fps {} kbps, {:?}, monitor {} of {}",
+            c.capture_mode,
+            c.display_method,
+            c.codec,
+            c.quality,
+            c.fps,
+            c.bitrate_kbps,
+            c.resolution,
+            c.monitor_index + 1,
+            self.monitors.len()
+        );
+        let _ = writeln!(
+            out,
+            "Buffer: {} s, {} MB max, {:?}",
+            c.buffer_secs, c.buffer_max_mb, c.container
+        );
+        let _ = writeln!(
+            out,
+            "Audio: desktop {} ({}), mic {} ({})",
+            c.audio.desktop_enabled,
+            if c.audio.desktop_device.is_empty() {
+                "default"
+            } else {
+                "chosen device"
+            },
+            c.audio.mic_enabled,
+            if c.audio.mic_device.is_empty() {
+                "default"
+            } else {
+                "chosen device"
+            },
+        );
+        let _ = writeln!(
+            out,
+            "UI: lang {:?}, theme {}, low power {}, animations {}",
+            c.language, c.theme, c.low_power_ui, c.animations
+        );
+        let voice = self
+            .voice
+            .as_ref()
+            .map(|v| format!("{:?}", v.shared.status()))
+            .unwrap_or_else(|| "not running".into());
+        let _ = writeln!(
+            out,
+            "Voice: enabled {}, lang {}, phrase \"{}\", {voice}",
+            c.voice.enabled, c.voice.language, c.voice.phrase
+        );
+        if let Some(h) = self.voice.as_ref().and_then(|v| v.shared.last_heard()) {
+            let _ = writeln!(
+                out,
+                "Voice last heard: \"{}\" {:?} {:?}",
+                h.text, h.conf, h.verdict
+            );
+        }
+        let _ = writeln!(
+            out,
+            "Add-ons: voice runtime {}, effects {}, themes {}",
+            self.packs.runtime_installed(),
+            self.packs.effects.len(),
+            self.packs.themes.len()
+        );
+        for e in &self.hotkey_errors {
+            let _ = writeln!(out, "Hotkey: {e}");
+        }
+        let now = SystemTime::now();
+        for (at, e) in &self.recent_errors {
+            let ago = now.duration_since(*at).map(|d| d.as_secs()).unwrap_or(0);
+            let _ = writeln!(out, "Error ({ago} s ago): {e}");
+        }
+        out
     }
 
     /// In-app toast plus the over-the-game overlay (skipped while Rewind itself is focused).
@@ -1163,6 +1339,7 @@ impl eframe::App for RewindApp {
                 PackEvent::Installed(key) => {
                     self.notify(i18n::tf("Installed {key}", &[("key", &key)]), false);
                     self.invalidate_voice_files();
+                    self.refresh_preview_exe();
                     if !self.packs.available_effects().contains(&self.draft.effects) {
                         self.draft.effects = EffectStyle::None;
                     }

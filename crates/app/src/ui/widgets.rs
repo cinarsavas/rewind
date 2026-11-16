@@ -26,6 +26,7 @@ pub enum Icon {
     Download,
     Check,
     Warning,
+    Copy,
 }
 
 pub fn paint_icon(p: &egui::Painter, icon: Icon, c: Pos2, size: f32, color: Color32) {
@@ -195,6 +196,17 @@ pub fn paint_icon(p: &egui::Painter, icon: Icon, c: Pos2, size: f32, color: Colo
                 ],
                 st,
             );
+        }
+        Icon::Copy => {
+            // Two overlapping sheets.
+            let back = Rect::from_center_size(
+                pos2(c.x - s * 0.18, c.y - s * 0.18),
+                vec2(size * 0.58, size * 0.66),
+            );
+            let front = back.translate(vec2(s * 0.36, s * 0.36));
+            let r = CornerRadius::same((size * 0.12) as u8);
+            p.rect_stroke(back, r, st, StrokeKind::Middle);
+            p.rect_stroke(front, r, st, StrokeKind::Middle);
         }
         Icon::Check => {
             p.add(Shape::line(

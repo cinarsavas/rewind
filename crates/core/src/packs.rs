@@ -83,6 +83,8 @@ pub struct PackIndex {
     pub voice: Vec<VoicePack>,
     pub theme: Vec<ThemePack>,
     pub effects: Vec<EffectPack>,
+    /// Hover previews: a zip with ffmpeg.exe, used to pull frames from clips (and to trim).
+    pub preview: Option<PackFile>,
 }
 
 impl PackIndex {
@@ -97,6 +99,9 @@ impl PackIndex {
         let mut files: Vec<(&str, &PackFile)> = Vec::new();
         if let Some(r) = &self.voice_runtime {
             files.push(("voice runtime", r));
+        }
+        if let Some(p) = &self.preview {
+            files.push(("hover previews", p));
         }
         files.extend(self.voice.iter().map(|v| (v.id.as_str(), &v.file)));
         files.extend(self.theme.iter().map(|t| (t.id.as_str(), &t.file)));

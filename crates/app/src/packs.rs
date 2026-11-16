@@ -31,6 +31,7 @@ pub fn repo() -> String {
 }
 
 pub const KEY_RUNTIME: &str = "voice-runtime";
+pub const KEY_PREVIEW: &str = "preview";
 
 /// Vosk models come in two layouts: the current one with `am/`, `conf/` and `graph/`
 /// folders, and the older flat one used by the small Turkish model (`final.mdl`,
@@ -150,6 +151,38 @@ impl PackManager {
 
     pub fn voice_model_dir(&self, id: &str) -> PathBuf {
         self.root.join(format!("voice-{id}"))
+    }
+
+    fn preview_dir(&self) -> PathBuf {
+        self.root.join(KEY_PREVIEW)
+    }
+
+    /// ffmpeg.exe from the hover-preview add-on, if it is installed.
+    pub fn preview_ffmpeg(&self) -> Option<PathBuf> {
+        let exe = self.preview_dir().join("ffmpeg.exe");
+        exe.is_file().then_some(exe)
+    }
+
+    pub fn install_preview(&mut self) {
+        let Some(file) = self.index.as_ref().and_then(|i| i.preview.clone()) else {
+            return;
+        };
+        let (root, dest) = (self.root.clone(), self.preview_dir());
+        self.spawn_job(KEY_PREVIEW, move |p| {
+            install_zip(
+                &root,
+                "preview-ffmpeg.zip",
+                &file.url,
+                &file.sha256,
+                &dest,
+                &p,
+                |d| d.join("ffmpeg.exe").is_file(),
+            )
+        });
+    }
+
+    pub fn remove_preview(&mut self) {
+        let _ = fs::remove_dir_all(self.preview_dir());
     }
 
     pub fn runtime_installed(&self) -> bool {

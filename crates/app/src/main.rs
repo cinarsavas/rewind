@@ -11,6 +11,7 @@ mod overlay;
 mod packs;
 mod perf;
 mod platform;
+mod preview;
 mod runtime;
 mod thumbs;
 mod tray;
