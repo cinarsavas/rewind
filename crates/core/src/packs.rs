@@ -37,6 +37,44 @@ pub struct ThemePack {
     pub file: PackFile,
 }
 
+/// A downloadable set of toggle celebrations. The file lists style ids that the app knows
+/// how to draw; keeping them out of the installer means the default install has no effects.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EffectPack {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub author: String,
+    #[serde(flatten)]
+    pub file: PackFile,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EffectFile {
+    pub version: u32,
+    pub styles: Vec<String>,
+}
+
+impl EffectFile {
+    pub fn from_toml(text: &str) -> Result<EffectFile, String> {
+        toml::from_str(text).map_err(|e| e.to_string())
+    }
+
+    /// Known celebration ids, in file order, without duplicates.
+    pub fn known_styles(&self) -> Vec<crate::config::EffectStyle> {
+        let mut out: Vec<crate::config::EffectStyle> = Vec::new();
+        for id in &self.styles {
+            if let Some(style) = crate::config::EffectStyle::from_id(id) {
+                if style != crate::config::EffectStyle::None && !out.contains(&style) {
+                    out.push(style);
+                }
+            }
+        }
+        out
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PackIndex {
@@ -44,6 +82,7 @@ pub struct PackIndex {
     pub voice_runtime: Option<PackFile>,
     pub voice: Vec<VoicePack>,
     pub theme: Vec<ThemePack>,
+    pub effects: Vec<EffectPack>,
 }
 
 impl PackIndex {
@@ -61,6 +100,7 @@ impl PackIndex {
         }
         files.extend(self.voice.iter().map(|v| (v.id.as_str(), &v.file)));
         files.extend(self.theme.iter().map(|t| (t.id.as_str(), &t.file)));
+        files.extend(self.effects.iter().map(|e| (e.id.as_str(), &e.file)));
         for (name, f) in files {
             if !allowed_download_url(&f.url) {
                 return Err(format!(
@@ -77,6 +117,7 @@ impl PackIndex {
             .iter()
             .map(|v| &v.id)
             .chain(self.theme.iter().map(|t| &t.id))
+            .chain(self.effects.iter().map(|e| &e.id))
         {
             if !valid_id(id) {
                 return Err(format!("pack id '{id}' contains unsafe characters"));
@@ -266,5 +307,24 @@ mod tests {
             index_url("me/rewind"),
             "https://github.com/me/rewind/releases/latest/download/packs.toml"
         );
+    }
+
+    #[test]
+    fn effect_pack_lists_known_styles() {
+        let file = EffectFile::from_toml(
+            "version = 1\nstyles = [\"shine\", \"bloom\", \"not-a-style\", \"shine\"]\n",
+        )
+        .unwrap();
+        assert_eq!(
+            file.known_styles(),
+            vec![
+                crate::config::EffectStyle::Shine,
+                crate::config::EffectStyle::Bloom
+            ]
+        );
+        let text = format!(
+            "[[effects]]\nid=\"basic\"\nname=\"Celebration effects\"\nurl=\"https://github.com/o/r/e.toml\"\nsha256=\"{HASH}\"\n"
+        );
+        assert_eq!(PackIndex::from_toml(&text).unwrap().effects.len(), 1);
     }
 }

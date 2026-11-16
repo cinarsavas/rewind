@@ -9,6 +9,7 @@ Produces, in --out:
   voice-runtime.zip    libvosk.dll + its sibling DLLs (flat, from the official Vosk release)
   voice-<id>.zip       one Vosk language model per language (flat)
   theme-<id>.toml      every file in /themes
+  effects-<id>.toml    downloadable toggle celebrations
   packs.toml           index with a SHA-256 for every file, read by the app (Add-ons page)
 """
 import argparse
@@ -31,6 +32,9 @@ LANGUAGES = {
     "tr": ("Türkçe", "vosk-model-small-tr-0.3"),
 }
 MODEL_URL = "https://alphacephei.com/vosk/models/{name}.zip"
+
+# Celebration painters compiled into the app; a pack simply unlocks them.
+EFFECT_STYLES = ["shine", "sparkle", "creeper", "ripple", "confetti", "comet", "bloom", "bolt"]
 
 
 def fetch(url: str) -> bytes:
@@ -101,6 +105,18 @@ def main() -> int:
             flat_zip(root, p)
             lines += ["[[voice]]", f"id = {toml_str(lang)}", f"name = {toml_str(label)}",
                       f"url = {toml_str(f'{base}/{p.name}')}", f"sha256 = {toml_str(sha256(p))}", f"size_bytes = {p.stat().st_size}", ""]
+
+    effects_file = out / "effects-basic.toml"
+    styles = ", ".join(f'"{s}"' for s in EFFECT_STYLES)
+    effects_file.write_text(
+        "version = 1\n"
+        "# Toggle celebrations unlocked by this pack. Painters ship with the app.\n"
+        f"styles = [{styles}]\n",
+        encoding="utf-8",
+    )
+    lines += ["[[effects]]", 'id = "basic"', 'name = "Celebration effects"', 'author = "Rewind"',
+              f"url = {toml_str(f'{base}/{effects_file.name}')}", f"sha256 = {toml_str(sha256(effects_file))}",
+              f"size_bytes = {effects_file.stat().st_size}", ""]
 
     for t in sorted(pathlib.Path(args.themes).glob("*.toml")):
         text = t.read_text(encoding="utf-8")

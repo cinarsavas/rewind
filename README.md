@@ -27,7 +27,7 @@
 - **Whole screen and sound, like ShadowPlay.** Captures your monitor *and* follows you into fullscreen games, with game/desktop audio and an optional microphone mixed in.
 - **Works on any GPU.** Hardware encoding (NVIDIA NVENC, AMD AMF, Intel Quick Sync) through libobs, with a CPU fallback.
 - **Light on slow PCs.** A one-click **Low-end preset**, a cheap video scaler, a UI that doesn't redraw when nothing changes, and a live CPU/RAM readout so you can see what it costs. See [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
-- **Stays small.** Voice clipping and extra themes are **optional downloads**, not part of the installer.
+- **Stays small.** Voice clipping, extra themes and celebration effects are **optional downloads**, not part of the installer.
 - **Private.** Clips never leave your PC. The only network use is optional add-on downloads from this repo.
 
 ## Features
@@ -37,10 +37,11 @@
 | **Instant Replay** | Rolling buffer of the last 10 s to 10 min. Save with a global hotkey that works inside games. |
 | **System tray** | Closing the window keeps recording. Save, toggle or quit from the tray. Optional start-with-Windows (hidden). |
 | **In-game notifications** | A "Replay saved" toast over borderless/windowed games, hidden from your recordings. Plus an optional sound that works everywhere. |
-| **Clip library** | Video **thumbnails** (from Windows' own thumbnail cache), search, play, show in folder, lossless trim, Recycle Bin delete. |
+| **Clip library** | Video **thumbnails** (from Windows' own thumbnail cache), search, play, show in folder, lossless trim, rename, Recycle Bin or permanent delete. |
 | **Smooth UI** | Fades, staggered lists, sliding navigation and a live buffer ring, plus eased smooth scrolling and five switchable toggle celebrations. **Each can be switched off** for slow PCs. |
 | **Voice clipping** *(optional add-on)* | Say "clip that" to save. Runs offline on your PC; the engine and a small language model download on demand. |
 | **Themes** *(optional add-ons)* | Mint (built in) plus downloadable themes, or [make your own](docs/THEMES.md). |
+| **Toggle effects** *(optional add-on)* | Shine, Sparkle, Creeper, Ripple, Confetti, Comet, Bloom and Bolt celebrations when a switch turns on. |
 | **Presets** | Low-end PC, Balanced and High quality, in one click. |
 
 <p align="center">
@@ -89,6 +90,7 @@ Open the **Add-ons** page. Nothing is installed by default.
 
 - **Voice clipping**: download the speech engine (about 15 MB) and a language (about 40 MB), turn it on, and say your phrase. A noise gate keeps recognition idle during silence, so it costs almost no CPU. Recognition happens on your PC; no audio is sent anywhere. Powered by [Vosk](https://alphacephei.com/vosk/).
 - **Themes**: pick one to download, or drop your own `.toml` into the themes folder. See [docs/THEMES.md](docs/THEMES.md).
+- **Celebration effects**: download the pack to unlock the toggle celebrations. Effects stay off by default.
 
 Add-ons are downloaded from this repository's releases, only over HTTPS from GitHub hosts, and verified against a SHA-256 before use.
 

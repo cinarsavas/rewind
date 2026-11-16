@@ -226,6 +226,8 @@ impl DisplayMethod {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EffectStyle {
+    /// Also accepts "off", the id effect packs use, so a hand-edited config can't break.
+    #[serde(alias = "off")]
     None,
     Shine,
     Sparkle,
@@ -262,6 +264,25 @@ impl EffectStyle {
             EffectStyle::Bloom => "Bloom",
             EffectStyle::Bolt => "Bolt",
         }
+    }
+    /// Stable id used by downloadable effect packs.
+    pub fn id(self) -> &'static str {
+        match self {
+            EffectStyle::None => "off",
+            EffectStyle::Shine => "shine",
+            EffectStyle::Sparkle => "sparkle",
+            EffectStyle::Creeper => "creeper",
+            EffectStyle::Ripple => "ripple",
+            EffectStyle::Confetti => "confetti",
+            EffectStyle::Comet => "comet",
+            EffectStyle::Bloom => "bloom",
+            EffectStyle::Bolt => "bolt",
+        }
+    }
+    pub fn from_id(id: &str) -> Option<EffectStyle> {
+        Self::ALL
+            .into_iter()
+            .find(|style| style.id() == id.trim().to_lowercase())
     }
     pub fn blurb(self) -> &'static str {
         match self {
@@ -385,6 +406,8 @@ pub struct Config {
     pub language: Lang,
     /// Ask before deleting a clip. Turn off to delete straight to the Recycle Bin.
     pub confirm_delete: bool,
+    /// Delete clips for good instead of sending them to the Recycle Bin. Off by default.
+    pub delete_permanently: bool,
     /// Check GitHub for a newer release shortly after launch.
     pub check_updates: bool,
     /// Id of the active theme; "default" is built in, others are optional downloads.
@@ -424,11 +447,12 @@ impl Default for Config {
             launch_at_login: false,
             animations: true,
             smooth_scroll: true,
-            effects: EffectStyle::Shine,
+            effects: EffectStyle::None,
             low_power_ui: false,
             thumbnails: true,
             language: Lang::English,
             confirm_delete: true,
+            delete_permanently: false,
             check_updates: true,
             theme: "default".into(),
             voice: VoiceConfig::default(),
@@ -507,7 +531,7 @@ impl Config {
                 self.audio.bitrate_kbps = 160;
                 self.animations = true;
                 self.smooth_scroll = true;
-                self.effects = EffectStyle::Shine;
+                self.effects = EffectStyle::None;
                 self.low_power_ui = false;
                 self.thumbnails = true;
             }
@@ -521,7 +545,7 @@ impl Config {
                 self.audio.bitrate_kbps = 192;
                 self.animations = true;
                 self.smooth_scroll = true;
-                self.effects = EffectStyle::Shine;
+                self.effects = EffectStyle::None;
                 self.low_power_ui = false;
                 self.thumbnails = true;
             }
@@ -552,6 +576,7 @@ impl Config {
         same.thumbnails = self.thumbnails;
         same.language = self.language;
         same.confirm_delete = self.confirm_delete;
+        same.delete_permanently = self.delete_permanently;
         same.check_updates = self.check_updates;
         same.theme = self.theme.clone();
         same.voice = self.voice.clone();
@@ -564,12 +589,66 @@ impl Config {
     }
 
     pub fn load_from(path: &Path) -> Config {
-        let mut cfg = std::fs::read_to_string(path)
-            .ok()
-            .and_then(|s| toml::from_str::<Config>(&s).ok())
-            .unwrap_or_default();
+        let mut cfg = match std::fs::read_to_string(path) {
+            Ok(text) => match toml::from_str::<Config>(&text) {
+                Ok(cfg) => cfg,
+                Err(_) => {
+                    // One bad value used to throw the whole file away, and the defaults were
+                    // then saved over it. Keep a copy of what was there and salvage every
+                    // setting that still reads correctly.
+                    let _ = std::fs::copy(path, path.with_extension("toml.bad"));
+                    Config::parse_lenient(&text)
+                }
+            },
+            Err(_) => Config::default(),
+        };
         cfg.sanitize();
         cfg
+    }
+
+    /// Parse a config, keeping every value that is valid and using the default for any
+    /// that isn't (an unknown enum name, a wrong type…). Nested tables such as `[audio]`
+    /// and `[voice]` are salvaged key by key too.
+    pub fn parse_lenient(text: &str) -> Config {
+        if let Ok(cfg) = toml::from_str::<Config>(text) {
+            return cfg;
+        }
+        let Ok(user) = text.parse::<toml::Table>() else {
+            return Config::default();
+        };
+        let Ok(mut merged) = toml::Table::try_from(Config::default()) else {
+            return Config::default();
+        };
+        let valid = |t: &toml::Table| toml::Value::Table(t.clone()).try_into::<Config>().is_ok();
+        for (key, value) in user {
+            match (merged.get(&key).cloned(), value) {
+                (Some(toml::Value::Table(mut base)), toml::Value::Table(sub)) => {
+                    for (k, v) in sub {
+                        let prev = base.insert(k.clone(), v);
+                        merged.insert(key.clone(), toml::Value::Table(base.clone()));
+                        if !valid(&merged) {
+                            match prev {
+                                Some(p) => base.insert(k, p),
+                                None => base.remove(&k),
+                            };
+                            merged.insert(key.clone(), toml::Value::Table(base.clone()));
+                        }
+                    }
+                }
+                (prev, value) => {
+                    merged.insert(key.clone(), value);
+                    if !valid(&merged) {
+                        match prev {
+                            Some(p) => merged.insert(key, p),
+                            None => merged.remove(&key),
+                        };
+                    }
+                }
+            }
+        }
+        toml::Value::Table(merged)
+            .try_into::<Config>()
+            .unwrap_or_default()
     }
 
     pub fn save_to(&self, path: &Path) -> std::io::Result<()> {
@@ -587,6 +666,34 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn one_bad_value_keeps_the_rest() {
+        let mut cfg = Config {
+            fps: 30,
+            confirm_delete: false,
+            delete_permanently: true,
+            ..Config::default()
+        };
+        cfg.voice.language = "tr".into();
+        let mut text = toml::to_string_pretty(&cfg).unwrap();
+        text = text.replace("resolution = ", "resolution = \"not-a-size\"\n#");
+        text = text.replace("sensitivity = 0.5", "sensitivity = \"loud\"");
+        assert!(toml::from_str::<Config>(&text).is_err());
+        let loaded = Config::parse_lenient(&text);
+        assert_eq!(loaded.fps, 30);
+        assert!(!loaded.confirm_delete);
+        assert!(loaded.delete_permanently);
+        assert_eq!(loaded.voice.language, "tr");
+        assert_eq!(loaded.resolution, Config::default().resolution);
+    }
+
+    #[test]
+    fn effects_off_alias_parses() {
+        let mut text = toml::to_string_pretty(&Config::default()).unwrap();
+        text = text.replace("effects = \"none\"", "effects = \"off\"");
+        assert!(toml::from_str::<Config>(&text).is_ok());
+    }
 
     #[test]
     fn defaults_survive_round_trip() {
@@ -623,6 +730,16 @@ mod tests {
     }
 
     #[test]
+    fn effect_ids_round_trip() {
+        for style in EffectStyle::ALL {
+            assert_eq!(EffectStyle::from_id(style.id()), Some(style));
+        }
+        assert_eq!(EffectStyle::from_id("bloom"), Some(EffectStyle::Bloom));
+        assert_eq!(EffectStyle::from_id("nope"), None);
+        assert_eq!(Config::default().effects, EffectStyle::None);
+    }
+
+    #[test]
     fn old_config_files_without_new_fields_still_load() {
         let dir = std::env::temp_dir().join(format!("rewind-cfg-old-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -634,7 +751,7 @@ mod tests {
         assert_eq!(cfg.codec, Codec::Hevc);
         assert_eq!(cfg.display_method, DisplayMethod::Dxgi);
         assert!(cfg.smooth_scroll);
-        assert_eq!(cfg.effects, EffectStyle::Shine);
+        assert_eq!(cfg.effects, EffectStyle::None);
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -658,7 +775,7 @@ mod tests {
         assert!(
             bal.animations
                 && bal.smooth_scroll
-                && bal.effects == EffectStyle::Shine
+                && bal.effects == EffectStyle::None
                 && !bal.low_power_ui
         );
         for c in [&low, &bal, &high] {

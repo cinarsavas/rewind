@@ -167,10 +167,38 @@ impl PhraseMatcher {
     }
 }
 
+/// Lower-case and clean a phrase for Vosk's grammar, without folding Turkish letters onto
+/// ASCII. Vosk's Turkish vocabulary keeps `ı`, `ş`, `ç`, `ğ`, `ö` and `ü`, so `kayıt` must
+/// stay `kayıt`; the matcher's [`normalize`] is deliberately looser and is only used for
+/// comparing what was heard.
+pub fn grammar_phrase(phrase: &str, turkish: bool) -> String {
+    let mut out = String::with_capacity(phrase.len());
+    let mut last_space = true;
+    for ch in phrase.chars() {
+        let lowered: String = if turkish && ch == 'I' {
+            "ı".into()
+        } else if turkish && ch == 'İ' {
+            "i".into()
+        } else {
+            ch.to_lowercase().collect()
+        };
+        for lc in lowered.chars() {
+            if lc.is_alphanumeric() {
+                out.push(lc);
+                last_space = false;
+            } else if !last_space {
+                out.push(' ');
+                last_space = true;
+            }
+        }
+    }
+    out.trim().to_string()
+}
+
 /// Vosk grammar: only the trigger phrase (plus `[unk]`) can be recognised, which is both
 /// faster and far less prone to false triggers than free dictation.
-pub fn grammar_json(phrase: &str) -> String {
-    serde_json::to_string(&[normalize(phrase).as_str(), "[unk]"])
+pub fn grammar_json(phrase: &str, turkish: bool) -> String {
+    serde_json::to_string(&[grammar_phrase(phrase, turkish).as_str(), "[unk]"])
         .unwrap_or_else(|_| "[\"[unk]\"]".into())
 }
 
@@ -302,8 +330,20 @@ mod tests {
 
     #[test]
     fn grammar_is_valid_json_with_unknown_token() {
-        assert_eq!(grammar_json("Clip That!"), "[\"clip that\",\"[unk]\"]");
-        assert_eq!(grammar_json("say \"hi\""), "[\"say hi\",\"[unk]\"]");
+        assert_eq!(
+            grammar_json("Clip That!", false),
+            "[\"clip that\",\"[unk]\"]"
+        );
+        assert_eq!(grammar_json("say \"hi\"", false), "[\"say hi\",\"[unk]\"]");
+    }
+
+    #[test]
+    fn turkish_grammar_keeps_its_own_letters() {
+        assert_eq!(grammar_json("KLİP AL", true), "[\"klip al\",\"[unk]\"]");
+        assert_eq!(grammar_json("KAYIT AL", true), "[\"kayıt al\",\"[unk]\"]");
+        assert_eq!(grammar_json("Kayıt Al", true), "[\"kayıt al\",\"[unk]\"]");
+        // English keeps the plain dotted i.
+        assert_eq!(grammar_json("KAYIT AL", false), "[\"kayit al\",\"[unk]\"]");
     }
 
     #[test]

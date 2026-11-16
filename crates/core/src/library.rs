@@ -23,11 +23,19 @@ fn is_clip(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn push_dir(dir: &Path, group: &str, out: &mut Vec<Clip>) {
+/// Add the clips in `dir` to `out`. When `subdirs` is given, folders found along the way are
+/// collected there, so the top level is listed once instead of twice.
+fn push_dir(dir: &Path, group: &str, out: &mut Vec<Clip>, mut subdirs: Option<&mut Vec<PathBuf>>) {
     let Ok(rd) = fs::read_dir(dir) else { return };
     for entry in rd.flatten() {
         let path = entry.path();
         let Ok(meta) = entry.metadata() else { continue };
+        if meta.is_dir() {
+            if let Some(dirs) = subdirs.as_deref_mut() {
+                dirs.push(path);
+            }
+            continue;
+        }
         if meta.is_file() && is_clip(&path) {
             out.push(Clip {
                 name: path
@@ -46,14 +54,14 @@ fn push_dir(dir: &Path, group: &str, out: &mut Vec<Clip>) {
 /// Scan `dir` and its immediate sub-folders (per-game folders), newest first.
 pub fn scan(dir: &Path) -> Vec<Clip> {
     let mut clips = Vec::new();
-    push_dir(dir, "", &mut clips);
-    if let Ok(rd) = fs::read_dir(dir) {
-        for entry in rd.flatten() {
-            if entry.metadata().map(|m| m.is_dir()).unwrap_or(false) {
-                let group = entry.file_name().to_string_lossy().into_owned();
-                push_dir(&entry.path(), &group, &mut clips);
-            }
-        }
+    let mut subdirs = Vec::new();
+    push_dir(dir, "", &mut clips, Some(&mut subdirs));
+    for sub in subdirs {
+        let group = sub
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        push_dir(&sub, &group, &mut clips, None);
     }
     clips.sort_by(|a, b| {
         b.modified

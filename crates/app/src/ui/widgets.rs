@@ -21,6 +21,7 @@ pub enum Icon {
     Trash,
     Refresh,
     Scissors,
+    Pencil,
     Addons,
     Download,
     Check,
@@ -216,6 +217,20 @@ pub fn paint_icon(p: &egui::Painter, icon: Icon, c: Pos2, size: f32, color: Colo
             ));
             p.line_segment([pos2(c.x, c.y - s * 0.18), pos2(c.x, c.y + s * 0.22)], st);
             p.circle_filled(pos2(c.x, c.y + s * 0.48), s * 0.1, color);
+        }
+        Icon::Pencil => {
+            // A slanted pencil with a little nib, drawn as two outlines.
+            let a = pos2(c.x - s * 0.58, c.y + s * 0.58);
+            let b = pos2(c.x + s * 0.48, c.y - s * 0.62);
+            p.line_segment([a, b], Stroke::new(st.width + 2.0, color));
+            p.add(Shape::closed_line(
+                vec![
+                    pos2(c.x - s * 0.82, c.y + s * 0.82),
+                    pos2(c.x - s * 0.22, c.y + s * 0.72),
+                    pos2(c.x - s * 0.72, c.y + s * 0.22),
+                ],
+                st,
+            ));
         }
     }
 }

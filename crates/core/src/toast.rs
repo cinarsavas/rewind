@@ -39,8 +39,8 @@ pub fn place(corner: Corner, monitor: Rect, w: i32, h: i32, margin: i32) -> (i32
     }
 }
 
-const FADE_IN: f32 = 0.18;
-const FADE_OUT: f32 = 0.35;
+pub const FADE_IN: f32 = 0.18;
+pub const FADE_OUT: f32 = 0.35;
 
 /// Opacity 0..=1 at `t` seconds into a toast that lasts `total` seconds.
 pub fn alpha_at(t: f32, total: f32) -> f32 {

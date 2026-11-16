@@ -2,6 +2,30 @@
 
 All notable changes are listed here. The section for a tag becomes that release's notes.
 
+## [0.3.1]
+
+### Fixed
+- **Turkish voice clipping now installs.** The Turkish Vosk model uses the older flat layout (`final.mdl`, `HCLr.fst`, …), which the installer rejected with "the download doesn't contain the expected files". Both model layouts are accepted now, so Add-ons → Voice clipping can install Türkçe and the toggle becomes available.
+- **A phrase the model doesn't know is explained instead of silently failing.** The status now names the missing words and suggests the language's default phrase, with a one-click **Use default** button. For example, an English phrase left over after switching to Turkish shows `The Türkçe model doesn't know "clip", "that". Try "klip al".`
+- Turkish grammar keeps its own letters (`ı`, `ş`, `ç`, `ğ`, `ö`, `ü`) instead of folding them to ASCII, so custom Turkish phrases match what the model actually knows.
+- **A config file with one bad value no longer resets every setting.** Rewind keeps every value that still reads correctly, uses the default only for the broken one, and saves a copy of the original as `config.toml.bad`. `effects = "off"` is accepted as well as `"none"`.
+
+### Added
+- **Easy clip renaming.** Every clip row has a pencil button: type a new name, press Enter, and the file is renamed in place with its extension and folder kept. Windows-hostile characters are cleaned and an existing name gets a ` (2)` suffix instead of overwriting another clip.
+- **Delete clips permanently.** Settings → Replay buffer → **Delete permanently** skips the Recycle Bin, so deleted clips free their disk space right away. It is off by default; while it is on, the delete button and the confirmation say so in red.
+- **Downloadable celebration effects.** Toggle effects are now an Add-ons pack instead of being built into the default experience. Install **Celebration effects** from Add-ons to unlock Shine, Sparkle, Creeper, Ripple, Confetti, Comet, Bloom and Bolt; until then the picker stays Off.
+
+### Changed
+- **The Apply bar shows on every page.** Changing a setting on Add-ons, Clips or Replay now reveals the same Apply/Revert bar as Settings, so you no longer have to navigate back first.
+- Effects are off by default, including in the Balanced and High-quality presets.
+
+### Performance
+- **Long clip libraries stay light.** The Clips page only draws the rows on screen and only those load thumbnails. Before, a folder with more than 96 clips kept throwing its thumbnail cache away and reloading it in a loop; the cache now drops only the least recently seen thumbnail.
+- The replay-buffer state is cached instead of being asked from OBS's worker thread several times per frame.
+- Voice clipping no longer checks its files on disk every frame, and reuses its audio buffer instead of allocating one per chunk.
+- The in-game notification stops redrawing while it sits still, waking only for its fade-in and fade-out.
+- Saving a clip polls the clips folder without an extra file-system call per file, and the clip library lists its folder once instead of twice.
+
 ## [0.3.0]
 
 ### Added

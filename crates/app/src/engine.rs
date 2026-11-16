@@ -547,18 +547,20 @@ impl Saver {
             .into_iter()
             .flatten()
             .flatten()
+            .filter(|entry| self.is_clip(entry))
             .map(|entry| entry.path())
-            .filter(|path| self.is_clip(path))
             .collect()
     }
 
-    fn is_clip(&self, path: &Path) -> bool {
-        path.is_file()
-            && path
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .map(|ext| ext.eq_ignore_ascii_case(&self.extension))
-                .unwrap_or(false)
+    /// Extension first (free), then the file type from the directory listing itself, so the
+    /// 100 ms save poll doesn't stat every file in a big clips folder.
+    fn is_clip(&self, entry: &std::fs::DirEntry) -> bool {
+        Path::new(&entry.file_name())
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.eq_ignore_ascii_case(&self.extension))
+            .unwrap_or(false)
+            && entry.file_type().map(|t| t.is_file()).unwrap_or(false)
     }
 
     /// Newest clip written since the save request. Existing files are only accepted when
@@ -573,10 +575,10 @@ impl Saver {
             .flatten()
             .flatten()
         {
-            let path = entry.path();
-            if !self.is_clip(&path) {
+            if !self.is_clip(&entry) {
                 continue;
             }
+            let path = entry.path();
             let Ok(modified) = entry.metadata().and_then(|m| m.modified()) else {
                 continue;
             };

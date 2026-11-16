@@ -16,7 +16,8 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 use libloading::Library;
 use rewind_core::config::VoiceConfig;
-use rewind_core::voice::{grammar_json, parse_result, PhraseMatcher, VoiceGate};
+use rewind_core::i18n::{default_phrase, Lang};
+use rewind_core::voice::{grammar_json, grammar_phrase, parse_result, PhraseMatcher, VoiceGate};
 use wasapi::{initialize_mta, DeviceEnumerator, Direction, SampleType, StreamMode, WaveFormat};
 
 const SAMPLE_RATE: usize = 16_000;
@@ -26,8 +27,19 @@ const CHUNK_FRAMES: usize = 1_600; // 100 ms
 pub enum VoiceStatus {
     Starting,
     Listening,
+    /// The model loaded, but it has no such words in its vocabulary, so the configured
+    /// phrase can never be heard. The message suggests the language's default phrase.
+    Phrase(PhraseWarning),
     Error(String),
     Stopped,
+}
+
+/// A trigger phrase the installed model cannot hear, with the words it is missing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PhraseWarning {
+    pub lang: Lang,
+    pub missing: Vec<String>,
+    pub suggestion: &'static str,
 }
 
 pub struct VoiceShared {
@@ -77,6 +89,9 @@ struct Vosk {
     set_log_level: unsafe extern "C" fn(c_int),
     model_new: unsafe extern "C" fn(*const c_char) -> *mut c_void,
     model_free: unsafe extern "C" fn(*mut c_void),
+    /// Optional: lets us check a phrase against the model's vocabulary before listening.
+    find_word: Option<unsafe extern "C" fn(*mut c_void, *const c_char) -> c_int>,
+    rec_new: unsafe extern "C" fn(*mut c_void, f32) -> *mut c_void,
     rec_new_grm: unsafe extern "C" fn(*mut c_void, f32, *const c_char) -> *mut c_void,
     rec_free: unsafe extern "C" fn(*mut c_void),
     accept: unsafe extern "C" fn(*mut c_void, *const i16, c_int) -> c_int,
@@ -106,6 +121,11 @@ impl Vosk {
                 set_log_level: sym!("vosk_set_log_level"),
                 model_new: sym!("vosk_model_new"),
                 model_free: sym!("vosk_model_free"),
+                find_word: lib
+                    .get(b"vosk_model_find_word\0")
+                    .ok()
+                    .map(|symbol| *symbol),
+                rec_new: sym!("vosk_recognizer_new"),
                 rec_new_grm: sym!("vosk_recognizer_new_grm"),
                 rec_free: sym!("vosk_recognizer_free"),
                 accept: sym!("vosk_recognizer_accept_waveform_s"),
@@ -191,10 +211,14 @@ pub fn start(
         .name("rewind-voice".into())
         .spawn(move || {
             let result = run(&cfg, &runtime_dir, &model_dir, &device_id, &sh, &tx, &ctx);
-            sh.set_status(match result {
-                Ok(()) => VoiceStatus::Stopped,
-                Err(e) => VoiceStatus::Error(e),
-            });
+            // `run` may already have replaced the status with a phrase warning, which is
+            // more useful than "Stopped" and must not trigger the automatic retry loop.
+            if !matches!(sh.status(), VoiceStatus::Phrase(_)) {
+                sh.set_status(match result {
+                    Ok(()) => VoiceStatus::Stopped,
+                    Err(e) => VoiceStatus::Error(e),
+                });
+            }
             ctx.request_repaint();
         })
         .ok();
@@ -222,8 +246,45 @@ fn run(
     if model.is_null() {
         return Err("couldn't load the language model (re-download it from Add-ons)".into());
     }
-    let grammar = CString::new(grammar_json(&cfg.phrase)).map_err(|_| "bad phrase")?;
-    let rec = unsafe { (vosk.rec_new_grm)(model, SAMPLE_RATE as f32, grammar.as_ptr()) };
+
+    // A grammar only helps when the model actually knows every word. The Turkish small
+    // model, for example, has "klip" and "al" but not "clip" or "that", so a phrase left
+    // over from the English model would otherwise silently never match.
+    let lang = Lang::from_id(&cfg.language);
+    let turkish = lang == Lang::Turkish;
+    let words = grammar_phrase(&cfg.phrase, turkish);
+    if words.is_empty() {
+        unsafe { (vosk.model_free)(model) };
+        return Err("the trigger phrase is empty".into());
+    }
+    if let Some(find_word) = vosk.find_word {
+        let mut missing: Vec<String> = Vec::new();
+        for word in words.split(' ') {
+            let Ok(word_c) = CString::new(word) else {
+                continue;
+            };
+            if unsafe { find_word(model, word_c.as_ptr()) } < 0 {
+                missing.push(word.to_string());
+            }
+        }
+        if !missing.is_empty() {
+            sh.set_status(VoiceStatus::Phrase(PhraseWarning {
+                lang,
+                missing,
+                suggestion: default_phrase(lang),
+            }));
+            unsafe { (vosk.model_free)(model) };
+            return Ok(());
+        }
+    }
+
+    let grammar = CString::new(grammar_json(&cfg.phrase, turkish)).map_err(|_| "bad phrase")?;
+    let mut rec = unsafe { (vosk.rec_new_grm)(model, SAMPLE_RATE as f32, grammar.as_ptr()) };
+    if rec.is_null() {
+        // A model without grammar support still recognises free speech; the phrase matcher
+        // then has to pick the trigger out of everything that was said.
+        rec = unsafe { (vosk.rec_new)(model, SAMPLE_RATE as f32) };
+    }
     if rec.is_null() {
         unsafe { (vosk.model_free)(model) };
         return Err("couldn't start the recogniser".into());
@@ -288,19 +349,20 @@ fn listen(
     let started = Instant::now();
     let chunk_bytes = CHUNK_FRAMES * 2;
     let mut was_open = false;
+    // Reused for every chunk instead of allocating a fresh Vec several times a second.
+    let mut samples: Vec<i16> = Vec::with_capacity(CHUNK_FRAMES);
 
     while !sh.stop.load(Ordering::Relaxed) {
         capture
             .read_from_device_to_deque(&mut queue)
             .map_err(|e| format!("microphone: {e}"))?;
         while queue.len() >= chunk_bytes {
-            let samples: Vec<i16> = (0..CHUNK_FRAMES)
-                .map(|_| {
-                    let lo = queue.pop_front().unwrap_or(0);
-                    let hi = queue.pop_front().unwrap_or(0);
-                    i16::from_le_bytes([lo, hi])
-                })
-                .collect();
+            samples.clear();
+            let mut bytes = queue.drain(..chunk_bytes);
+            while let (Some(lo), Some(hi)) = (bytes.next(), bytes.next()) {
+                samples.push(i16::from_le_bytes([lo, hi]));
+            }
+            drop(bytes);
             let audio = gate.push(&samples);
             sh.level_bits
                 .store(gate.level().to_bits(), Ordering::Relaxed);

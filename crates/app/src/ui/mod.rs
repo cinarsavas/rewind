@@ -129,6 +129,16 @@ pub struct TrimState {
     pub running: bool,
 }
 
+/// The rename dialog's working state. `stem` is the file name without its extension, so
+/// typing a new name never accidentally drops the `.mp4`.
+pub struct RenameState {
+    pub clip: Clip,
+    pub stem: String,
+    pub error: Option<String>,
+    /// Focus the text field on the first frame, then leave the keyboard alone.
+    pub focus: bool,
+}
+
 pub struct RewindApp {
     pub cfg: Config,
     pub draft: Config,
@@ -166,8 +176,17 @@ pub struct RewindApp {
     pub last_saved: Option<PathBuf>,
     pub ffmpeg: Option<PathBuf>,
     pub trim: Option<TrimState>,
+    pub rename: Option<RenameState>,
     pub confirm_delete: Option<Clip>,
     pub buffer_started_at: Option<Instant>,
+    /// Cached replay-buffer state. Asking OBS is a round trip to its actor thread, and the
+    /// UI needs the answer several times per frame, so it is refreshed at most once a second
+    /// (and immediately whenever Rewind itself starts, stops or rebuilds the buffer).
+    buffer_on: bool,
+    buffer_checked: Option<Instant>,
+    /// Whether the voice runtime and the current language's model are on disk, re-checked
+    /// every few seconds instead of hitting the filesystem every frame.
+    voice_files: Option<(String, bool, Instant)>,
     quitting: bool,
     window_hidden: bool,
     focused: bool,
@@ -192,6 +211,9 @@ pub struct RewindApp {
     pub scroll_max: f32,
     /// When the current clip list appeared; drives the staggered row reveal.
     pub list_shown: Instant,
+    /// Height of one clip row including spacing, measured while drawing. Lets the Clips
+    /// page skip rows that are scrolled out of view.
+    pub clip_row_h: f32,
     /// Live celebrations (toggle effects), painted above the UI.
     fx: Vec<effects::FxEvent>,
     fx_seed: u32,
@@ -222,6 +244,11 @@ impl RewindApp {
             let _ = cfg.save_to(&cfg_path);
         }
         let packs = PackManager::new(directories_dir().join("packs"), cc.egui_ctx.clone());
+        // Effects are a downloadable pack now, so a config that still names one must fall
+        // back to Off until the pack is installed.
+        if cfg.effects != EffectStyle::None && !packs.available_effects().contains(&cfg.effects) {
+            cfg.effects = EffectStyle::None;
+        }
         i18n::set_lang(cfg.language);
         theme::install_fonts(&cc.egui_ctx);
         theme::set_animations(&cc.egui_ctx, cfg.animations);
@@ -310,8 +337,12 @@ impl RewindApp {
             last_saved: None,
             ffmpeg: trim::find_ffmpeg(app_dir.as_deref()),
             trim: None,
+            rename: None,
             confirm_delete: None,
             buffer_started_at: None,
+            buffer_on: false,
+            buffer_checked: None,
+            voice_files: None,
             quitting: false,
             window_hidden: hide_now,
             focused: !hide_now,
@@ -331,6 +362,7 @@ impl RewindApp {
             scroll_target: 0.0,
             scroll_max: 0.0,
             list_shown: Instant::now(),
+            clip_row_h: 0.0,
             fx: Vec::new(),
             fx_seed: 0x9E37_79B9,
             output_devices: crate::audio::output_devices(),
@@ -532,12 +564,27 @@ impl RewindApp {
         self.list_shown = Instant::now();
     }
 
+    /// True when the voice runtime and the configured model are installed. Cached for a few
+    /// seconds; [`Self::invalidate_voice_files`] forces a fresh look after installs.
+    fn voice_files_ready(&mut self) -> bool {
+        let lang = &self.cfg.voice.language;
+        if let Some((cached_lang, ok, at)) = &self.voice_files {
+            if cached_lang == lang && at.elapsed() < Duration::from_secs(3) {
+                return *ok;
+            }
+        }
+        let ok = self.packs.runtime_installed() && self.packs.model_installed(lang);
+        self.voice_files = Some((lang.clone(), ok, Instant::now()));
+        ok
+    }
+
+    fn invalidate_voice_files(&mut self) {
+        self.voice_files = None;
+    }
+
     /// Start, restart or stop the voice listener so it matches the settings and what's installed.
     pub fn sync_voice(&mut self) {
-        let want = self.cfg.voice.enabled
-            && self.engine.is_some()
-            && self.packs.runtime_installed()
-            && self.packs.model_installed(&self.cfg.voice.language);
+        let want = self.cfg.voice.enabled && self.engine.is_some() && self.voice_files_ready();
         if !want {
             self.voice = None;
             self.voice_running_cfg = None;
@@ -672,10 +719,26 @@ impl RewindApp {
     }
 
     pub fn buffer_active(&self) -> bool {
-        self.engine
+        self.engine.is_some() && self.buffer_on
+    }
+
+    /// Ask OBS for the real buffer state. `force` skips the once-a-second throttle.
+    fn refresh_buffer_state(&mut self, force: bool) {
+        if !force
+            && self
+                .buffer_checked
+                .map(|t| t.elapsed() < Duration::from_secs(1))
+                .unwrap_or(false)
+        {
+            return;
+        }
+        let on = self
+            .engine
             .as_ref()
             .map(|e| e.is_buffer_active())
-            .unwrap_or(false)
+            .unwrap_or(false);
+        self.buffer_on = on;
+        self.buffer_checked = Some(Instant::now());
     }
 
     pub fn set_buffer(&mut self, on: bool) {
@@ -683,6 +746,10 @@ impl RewindApp {
         match engine.set_buffer_active(on) {
             Ok(()) => {
                 self.buffer_started_at = if on { Some(Instant::now()) } else { None };
+                // OBS just accepted the change; trust it rather than asking again while the
+                // output may still be spinning up.
+                self.buffer_on = on;
+                self.buffer_checked = Some(Instant::now());
                 let (title, sub) = if on {
                     (
                         "Instant Replay on",
@@ -752,8 +819,10 @@ impl RewindApp {
                 ));
             }
         }
+        self.refresh_buffer_state(true);
         self.cfg = next;
         i18n::set_lang(self.cfg.language);
+        self.invalidate_voice_files();
         self.draft = self.cfg.clone();
         if let Err(e) = self.cfg.save_to(&self.cfg_path) {
             self.notify(
@@ -998,6 +1067,9 @@ impl eframe::App for RewindApp {
         // The language follows the applied config, so a change only takes effect on Apply.
         i18n::set_lang(self.cfg.language);
         self.drain_messages();
+        if self.engine.is_some() {
+            self.refresh_buffer_state(false);
+        }
         self.handle_hotkeys(ctx);
         self.handle_tray(ctx);
 
@@ -1005,6 +1077,10 @@ impl eframe::App for RewindApp {
             match ev {
                 PackEvent::Installed(key) => {
                     self.notify(i18n::tf("Installed {key}", &[("key", &key)]), false);
+                    self.invalidate_voice_files();
+                    if !self.packs.available_effects().contains(&self.draft.effects) {
+                        self.draft.effects = EffectStyle::None;
+                    }
                     self.sync_voice();
                 }
                 PackEvent::Failed(key, e) => self.notify(

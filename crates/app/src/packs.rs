@@ -8,7 +8,8 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 
 use eframe::egui;
-use rewind_core::packs::{index_url, PackIndex, ThemePack, VoicePack};
+use rewind_core::config::EffectStyle;
+use rewind_core::packs::{index_url, EffectFile, EffectPack, PackIndex, ThemePack, VoicePack};
 use rewind_core::theme::{Palette, ThemeFile, ThemeLayout};
 
 use crate::download::{download_verified, fetch_text, unzip, Progress};
@@ -31,6 +32,44 @@ pub fn repo() -> String {
 
 pub const KEY_RUNTIME: &str = "voice-runtime";
 
+/// Vosk models come in two layouts: the current one with `am/`, `conf/` and `graph/`
+/// folders, and the older flat one used by the small Turkish model (`final.mdl`,
+/// `HCLr.fst`, `mfcc.conf`, `ivector/`). Vosk loads both, so accept both when installing
+/// and when checking whether a language is ready.
+fn is_voice_model(dir: &Path) -> bool {
+    (dir.join("am").is_dir() && dir.join("conf").is_dir())
+        || (dir.join("final.mdl").is_file() && dir.join("HCLr.fst").is_file())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_voice_model;
+
+    #[test]
+    fn accepts_both_vosk_model_layouts() {
+        let root = std::env::temp_dir().join(format!("rewind-model-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let nested = root.join("nested");
+        std::fs::create_dir_all(nested.join("am")).unwrap();
+        std::fs::create_dir_all(nested.join("conf")).unwrap();
+        assert!(is_voice_model(&nested));
+
+        // The Turkish small model ships flat: final.mdl + HCLr.fst at the root.
+        let flat = root.join("flat");
+        std::fs::create_dir_all(&flat).unwrap();
+        std::fs::write(flat.join("final.mdl"), b"x").unwrap();
+        std::fs::write(flat.join("HCLr.fst"), b"x").unwrap();
+        assert!(is_voice_model(&flat));
+
+        let empty = root.join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        assert!(!is_voice_model(&empty));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum IndexState {
     Idle,
@@ -49,6 +88,16 @@ pub struct InstalledTheme {
     pub layout: ThemeLayout,
     /// Absolute path of the background image, if the theme ships one next to its TOML.
     pub background_path: Option<PathBuf>,
+}
+
+/// A downloaded celebration pack. The painters live in the app; the pack says which ones
+/// are unlocked, so a fresh install has effects switched off until you download this.
+#[derive(Clone)]
+pub struct InstalledEffects {
+    pub id: String,
+    pub name: String,
+    pub author: String,
+    pub styles: Vec<EffectStyle>,
 }
 
 enum Msg {
@@ -71,6 +120,7 @@ pub struct PackManager {
     pub index_state: IndexState,
     pub jobs: HashMap<String, Arc<Progress>>,
     pub themes: Vec<InstalledTheme>,
+    pub effects: Vec<InstalledEffects>,
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
 }
@@ -85,10 +135,12 @@ impl PackManager {
             index_state: IndexState::Idle,
             jobs: HashMap::new(),
             themes: Vec::new(),
+            effects: Vec::new(),
             tx,
             rx,
         };
         m.scan_themes();
+        m.scan_effects();
         m
     }
 
@@ -105,12 +157,32 @@ impl PackManager {
     }
 
     pub fn model_installed(&self, id: &str) -> bool {
-        let d = self.voice_model_dir(id);
-        d.join("am").is_dir() || d.join("conf").is_dir()
+        is_voice_model(&self.voice_model_dir(id))
     }
 
     fn themes_dir(&self) -> PathBuf {
         self.root.join("themes")
+    }
+
+    fn effects_dir(&self) -> PathBuf {
+        self.root.join("effects")
+    }
+
+    pub fn effects_installed(&self) -> bool {
+        !self.effects.is_empty()
+    }
+
+    /// Every celebration unlocked by the downloaded packs, in pack order.
+    pub fn available_effects(&self) -> Vec<EffectStyle> {
+        let mut out = Vec::new();
+        for pack in &self.effects {
+            for style in &pack.styles {
+                if !out.contains(style) {
+                    out.push(*style);
+                }
+            }
+        }
+        out
     }
 
     pub fn request_index(&mut self) {
@@ -173,7 +245,7 @@ impl PackManager {
         let zip_name = format!("{key}.zip");
         self.spawn_job(&key, move |p| {
             install_zip(&root, &zip_name, &file.url, &file.sha256, &dest, &p, |d| {
-                d.join("am").is_dir() || d.join("conf").is_dir()
+                is_voice_model(d)
             })
         });
     }
@@ -204,6 +276,77 @@ impl PackManager {
     pub fn remove_theme(&mut self, id: &str) {
         let _ = fs::remove_file(self.themes_dir().join(format!("{id}.toml")));
         self.scan_themes();
+    }
+
+    pub fn install_effects(&mut self, pack: &EffectPack) {
+        let (dir, file, id) = (self.effects_dir(), pack.file.clone(), pack.id.clone());
+        self.spawn_job(&format!("effects-{id}"), move |p| {
+            let tmp = dir.join(format!("{id}.toml.download"));
+            download_verified(&file.url, &tmp, &file.sha256, &p)?;
+            let text = fs::read_to_string(&tmp).map_err(|e| e.to_string())?;
+            let file = match EffectFile::from_toml(&text) {
+                Ok(file) => file,
+                Err(e) => {
+                    let _ = fs::remove_file(&tmp);
+                    return Err(format!("the effect pack isn't usable: {e}"));
+                }
+            };
+            if file.known_styles().is_empty() {
+                let _ = fs::remove_file(&tmp);
+                return Err("the effect pack doesn't list any effects".into());
+            }
+            fs::rename(&tmp, dir.join(format!("{id}.toml"))).map_err(|e| e.to_string())
+        });
+    }
+
+    pub fn remove_effects(&mut self, id: &str) {
+        let _ = fs::remove_file(self.effects_dir().join(format!("{id}.toml")));
+        self.scan_effects();
+    }
+
+    pub fn scan_effects(&mut self) {
+        self.effects.clear();
+        let Ok(rd) = fs::read_dir(self.effects_dir()) else {
+            return;
+        };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("toml") {
+                continue;
+            }
+            let Some(id) = path.file_stem().map(|s| s.to_string_lossy().into_owned()) else {
+                continue;
+            };
+            if !rewind_core::packs::valid_id(&id) {
+                continue;
+            }
+            let Ok(text) = fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(file) = EffectFile::from_toml(&text) else {
+                continue;
+            };
+            let styles = file.known_styles();
+            if styles.is_empty() {
+                continue;
+            }
+            let index = self.index.as_ref().and_then(|i| {
+                i.effects
+                    .iter()
+                    .find(|e| e.id == id)
+                    .map(|e| (e.name.clone(), e.author.clone()))
+            });
+            self.effects.push(InstalledEffects {
+                id: id.clone(),
+                name: index
+                    .as_ref()
+                    .map(|(n, _)| n.clone())
+                    .unwrap_or_else(|| "Celebration effects".into()),
+                author: index.map(|(_, a)| a).unwrap_or_default(),
+                styles,
+            });
+        }
+        self.effects.sort_by_key(|e| e.name.to_lowercase());
     }
 
     pub fn scan_themes(&mut self) {
@@ -287,6 +430,9 @@ impl PackManager {
                 Msg::Index(Ok(idx)) => {
                     self.index = Some(idx);
                     self.index_state = IndexState::Ready;
+                    // Installed packs were scanned before the index arrived; re-read them
+                    // now so their display names and authors come from packs.toml.
+                    self.scan_effects();
                 }
                 Msg::Index(Err(e)) => self.index_state = IndexState::Failed(e),
                 Msg::Done { key, result } => {
@@ -295,6 +441,9 @@ impl PackManager {
                         Ok(()) => {
                             if key.starts_with("theme-") {
                                 self.scan_themes();
+                            }
+                            if key.starts_with("effects-") {
+                                self.scan_effects();
                             }
                             events.push(PackEvent::Installed(key));
                         }

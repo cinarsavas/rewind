@@ -15,7 +15,8 @@ use std::time::{Duration, Instant};
 
 use rewind_core::config::Corner;
 use rewind_core::toast::{
-    alpha_at, place, rounded_rect_coverage, slide_remaining, Rect, ToastKind, ToastSpec,
+    alpha_at, place, rounded_rect_coverage, slide_remaining, Rect, ToastKind, ToastSpec, FADE_IN,
+    FADE_OUT,
 };
 use windows_sys::Win32::Foundation::{HWND, POINT, RECT, SIZE};
 use windows_sys::Win32::Graphics::Gdi::*;
@@ -126,6 +127,8 @@ struct Active {
     mem_dc: HDC,
     bitmap: HBITMAP,
     old_bitmap: HGDIOBJ,
+    /// Alpha and slide offset last pushed to the window, to skip identical updates.
+    shown: Option<(u8, i32)>,
 }
 
 fn run(rx: std::sync::mpsc::Receiver<Cmd>) {
@@ -168,9 +171,21 @@ fn run(rx: std::sync::mpsc::Receiver<Cmd>) {
                 DispatchMessageW(&msg);
             }
 
-            // Wake 60 times a second only while a toast is animating; when idle, sleep long
-            // so this thread costs nothing on slow PCs.
-            let wait = if active.is_some() { 16 } else { 400 };
+            // Wake 60 times a second only while a toast is fading or sliding. While it sits
+            // still, sleep until the fade-out starts; when idle, sleep long. Either way the
+            // thread costs next to nothing while a game is running.
+            let wait = match &active {
+                Some(a) => {
+                    let t = a.started.elapsed().as_secs_f32();
+                    if t >= FADE_IN && a.shown == Some((255, 0)) {
+                        let until_fade = a.total - FADE_OUT - t;
+                        ((until_fade * 1000.0) as u64).clamp(16, 400)
+                    } else {
+                        16
+                    }
+                }
+                None => 400,
+            };
             match rx.recv_timeout(Duration::from_millis(wait)) {
                 Ok(Cmd::Show {
                     spec,
@@ -195,6 +210,9 @@ fn run(rx: std::sync::mpsc::Receiver<Cmd>) {
                 } else {
                     let alpha = (alpha_at(t, a.total) * 255.0).round() as u8;
                     let slide = -((slide_remaining(t) * 14.0) as i32 * a.dir_y);
+                    if a.shown == Some((alpha, slide)) {
+                        continue;
+                    }
                     let dst = POINT {
                         x: a.x,
                         y: a.y + slide,
@@ -210,6 +228,9 @@ fn run(rx: std::sync::mpsc::Receiver<Cmd>) {
                     UpdateLayeredWindow(
                         hwnd, screen_dc, &dst, &size, a.mem_dc, &src, 0, &blend, ULW_ALPHA,
                     );
+                    if let Some(a) = &mut active {
+                        a.shown = Some((alpha, slide));
+                    }
                 }
             }
         }
@@ -316,6 +337,7 @@ unsafe fn start_toast(
         mem_dc,
         bitmap,
         old_bitmap,
+        shown: None,
     })
 }
 

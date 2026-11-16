@@ -1,3 +1,5 @@
+use std::fs;
+
 use eframe::egui::{
     self, pos2, vec2, Align, Color32, CornerRadius, Event, Key, Layout, Margin, RichText, Sense,
     Stroke,
@@ -9,13 +11,13 @@ use rewind_core::config::{
 use rewind_core::estimate;
 use rewind_core::hotkey::Hotkey;
 use rewind_core::i18n::{default_phrase, Lang};
-use rewind_core::library::{human_size, Clip};
+use rewind_core::library::{human_size, sanitize_file_name, unique_path, Clip};
 
 use super::effects;
 use super::i18n::{t, tf};
 use super::theme::*;
 use super::widgets::*;
-use super::{row_reveal_at, Page, Phase, RewindApp, TrimMode, TrimState, UpdateState};
+use super::{row_reveal_at, Page, Phase, RenameState, RewindApp, TrimMode, TrimState, UpdateState};
 use crate::audio::AudioDevice;
 use crate::packs::IndexState;
 use crate::thumbs::Thumbs;
@@ -54,7 +56,7 @@ pub fn draw(app: &mut RewindApp, root: &mut egui::Ui) {
         .show(root, |ui| nav(app, ui));
 
     let dirty = app.draft != app.cfg;
-    if app.page == Page::Settings && dirty {
+    if dirty {
         egui::Panel::bottom("apply_bar")
             .frame(
                 egui::Frame::new()
@@ -158,6 +160,7 @@ pub fn draw(app: &mut RewindApp, root: &mut egui::Ui) {
         });
 
     trim_window(app, ctx);
+    rename_window(app, ctx);
     delete_window(app, ctx);
     toast(app, ctx);
 }
@@ -580,6 +583,7 @@ fn replay_page(app: &mut RewindApp, ui: &mut egui::Ui, ctx: &egui::Context) {
         return;
     }
     let (want_thumb, can_trim) = (app.cfg.thumbnails, app.ffmpeg.is_some());
+    let permanent = app.cfg.delete_permanently;
     let mut action: Option<(usize, ClipAction)> = None;
     for i in 0..app.clip_rows.len().min(3) {
         let reveal = app.row_reveal(i);
@@ -591,6 +595,7 @@ fn replay_page(app: &mut RewindApp, ui: &mut egui::Ui, ctx: &egui::Context) {
             &mut app.thumbs,
             want_thumb,
             can_trim,
+            permanent,
             reveal,
         ) {
             action = Some((i, a));
@@ -605,6 +610,7 @@ fn replay_page(app: &mut RewindApp, ui: &mut egui::Ui, ctx: &egui::Context) {
 #[derive(Clone, Copy)]
 enum ClipAction {
     Delete,
+    Rename,
     Trim,
     Reveal,
     Play,
@@ -618,6 +624,19 @@ fn apply_clip_action(app: &mut RewindApp, action: ClipAction, clip: &Clip) {
             } else {
                 delete_clip_now(app, clip);
             }
+        }
+        ClipAction::Rename => {
+            let stem = clip
+                .path
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| clip.name.clone());
+            app.rename = Some(RenameState {
+                clip: clip.clone(),
+                stem,
+                error: None,
+                focus: true,
+            });
         }
         ClipAction::Trim => {
             app.trim = Some(TrimState {
@@ -638,11 +657,19 @@ fn apply_clip_action(app: &mut RewindApp, action: ClipAction, clip: &Clip) {
     }
 }
 
-/// Send a clip to the Recycle Bin and refresh the list.
+/// Delete a clip (Recycle Bin, or for good when "Delete permanently" is on) and refresh
+/// the list. Uses the applied config, not the draft, so an unapplied toggle never decides
+/// whether a file is recoverable.
 fn delete_clip_now(app: &mut RewindApp, clip: &Clip) {
-    match trash::delete(&clip.path) {
+    let result = if app.cfg.delete_permanently {
+        std::fs::remove_file(&clip.path).map_err(|e| e.to_string())
+    } else {
+        trash::delete(&clip.path).map_err(|e| e.to_string())
+    };
+    match result {
+        Ok(()) if app.cfg.delete_permanently => app.notify(t("Clip deleted"), false),
         Ok(()) => app.notify(t("Moved to Recycle Bin"), false),
-        Err(e) => app.notify(tf("Couldn't delete: {e}", &[("e", &e.to_string())]), true),
+        Err(e) => app.notify(tf("Couldn't delete: {e}", &[("e", &e)]), true),
     }
     app.refresh_clips(true);
 }
@@ -656,6 +683,7 @@ fn clip_row(
     thumbs: &mut Thumbs,
     want_thumb: bool,
     can_trim: bool,
+    permanent: bool,
     reveal: f32,
 ) -> Option<ClipAction> {
     let mut action = None;
@@ -700,8 +728,16 @@ fn clip_row(
                     ui.label(muted(meta));
                 });
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if icon_button(ui, Icon::Trash, "Move to Recycle Bin", pal().danger).clicked() {
+                    let tip = if permanent {
+                        "Delete permanently"
+                    } else {
+                        "Move to Recycle Bin"
+                    };
+                    if icon_button(ui, Icon::Trash, tip, pal().danger).clicked() {
                         action = Some(ClipAction::Delete);
+                    }
+                    if icon_button(ui, Icon::Pencil, "Rename", pal().muted).clicked() {
+                        action = Some(ClipAction::Rename);
                     }
                     let trim = ui
                         .add_enabled_ui(can_trim, |ui| {
@@ -814,10 +850,26 @@ fn clips_page(app: &mut RewindApp, ui: &mut egui::Ui) {
         return;
     }
     let (want_thumb, can_trim) = (app.cfg.thumbnails, app.ffmpeg.is_some());
+    let permanent = app.cfg.delete_permanently;
     let animate = animations_on() && !app.cfg.low_power_ui;
     let shown = app.list_shown;
     let mut action: Option<(usize, ClipAction)> = None;
+    // Rows scrolled out of view are replaced by empty space of the same height, so a long
+    // library costs the same per frame as a short one and only visible rows ask for
+    // thumbnails. The height comes from the last row that was actually drawn.
+    let mut row_h = app.clip_row_h;
     for (pos, &i) in app.filter_idx.iter().enumerate() {
+        let top = ui.cursor().top();
+        if row_h > 0.0 {
+            let slot = egui::Rect::from_min_size(
+                pos2(ui.cursor().left(), top),
+                vec2(ui.available_width(), row_h),
+            );
+            if !ui.is_rect_visible(slot) {
+                ui.add_space(row_h);
+                continue;
+            }
+        }
         let reveal = row_reveal_at(shown, pos, animate);
         let row = &app.clip_rows[i];
         if let Some(a) = clip_row(
@@ -827,11 +879,14 @@ fn clips_page(app: &mut RewindApp, ui: &mut egui::Ui) {
             &mut app.thumbs,
             want_thumb,
             can_trim,
+            permanent,
             reveal,
         ) {
             action = Some((i, a));
         }
+        row_h = ui.cursor().top() - top;
     }
+    app.clip_row_h = row_h;
     if let Some((i, a)) = action {
         let clip = app.clip_rows[i].clip.clone();
         apply_clip_action(app, a, &clip);
@@ -862,15 +917,20 @@ fn device_picker(ui: &mut egui::Ui, salt: &str, current: &mut String, devices: &
         });
 }
 
-/// A combo box with every celebration style. Picking one plays it immediately so the
-/// choice can be judged before Apply.
+/// A combo box with every celebration style that a downloaded pack has unlocked. Picking
+/// one plays it immediately so the choice can be judged before Apply.
 fn effect_picker(app: &mut RewindApp, ui: &mut egui::Ui) {
+    let available = app.packs.available_effects();
+    if available.is_empty() {
+        ui.label(muted("Download effects in Add-ons first."));
+        return;
+    }
     let before = app.draft.effects;
     egui::ComboBox::from_id_salt("effect_style")
         .width(170.0)
         .selected_text(t(before.label()))
         .show_ui(ui, |ui| {
-            for e in EffectStyle::ALL {
+            for e in std::iter::once(EffectStyle::None).chain(available) {
                 ui.selectable_value(&mut app.draft.effects, e, t(e.label()));
             }
         });
@@ -999,16 +1059,25 @@ fn settings_page(app: &mut RewindApp, ui: &mut egui::Ui, _ctx: &egui::Context) {
                 toggle(ui, &mut app.draft.low_power_ui);
             },
         );
+        let effects_ready = app.packs.effects_installed();
         setting_row(
             ui,
             "Toggle effects",
-            app.draft.effects.blurb(),
+            if effects_ready {
+                app.draft.effects.blurb()
+            } else {
+                "Download a celebration pack from Add-ons to turn these on."
+            },
             false,
             |ui| {
-                effect_picker(app, ui);
-                let at = ui.available_rect_before_wrap().right_center();
-                if text_button(ui, Some(Icon::Play), "Try it", true).clicked() {
-                    effects::queue(app.draft.effects, at);
+                if effects_ready {
+                    effect_picker(app, ui);
+                    let at = ui.available_rect_before_wrap().right_center();
+                    if text_button(ui, Some(Icon::Play), "Try it", true).clicked() {
+                        effects::queue(app.draft.effects, at);
+                    }
+                } else if text_button(ui, None, "Open Add-ons", true).clicked() {
+                    app.set_page(Page::Addons);
                 }
             },
         );
@@ -1227,10 +1296,23 @@ fn settings_page(app: &mut RewindApp, ui: &mut egui::Ui, _ctx: &egui::Context) {
         setting_row(
             ui,
             "Ask before deleting a clip",
-            "Turn off to send clips straight to the Recycle Bin with one click.",
-            true,
+            if app.draft.delete_permanently {
+                "Turn off to delete clips with one click."
+            } else {
+                "Turn off to send clips straight to the Recycle Bin with one click."
+            },
+            false,
             |ui| {
                 toggle(ui, &mut app.draft.confirm_delete);
+            },
+        );
+        setting_row(
+            ui,
+            "Delete permanently",
+            "Skip the Recycle Bin. Deleted clips can't be recovered.",
+            true,
+            |ui| {
+                toggle(ui, &mut app.draft.delete_permanently);
             },
         );
         setting_row(ui, "Save folder", "", true, |ui| {
@@ -1519,10 +1601,139 @@ fn trim_window(app: &mut RewindApp, ctx: &egui::Context) {
     }
 }
 
+fn rename_window(app: &mut RewindApp, ctx: &egui::Context) {
+    let Some(state) = app.rename.as_ref() else {
+        return;
+    };
+    let clip = state.clip.clone();
+    let mut stem = state.stem.clone();
+    let mut error = state.error.clone();
+    let mut focus = state.focus;
+    let mut open = true;
+    let mut run = false;
+    let mut cancel = false;
+
+    egui::Window::new(t("Rename clip"))
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(false)
+        .show(ctx, |ui| {
+            ui.set_width(340.0);
+            ui.label(bold(&clip.name));
+            let ext = clip
+                .path
+                .extension()
+                .map(|e| e.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            ui.horizontal(|ui| {
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut stem)
+                        .desired_width(220.0)
+                        .margin(Margin::symmetric(10, 7))
+                        .hint_text(t("New name")),
+                );
+                if focus {
+                    resp.request_focus();
+                    focus = false;
+                }
+                if !ext.is_empty() {
+                    ui.label(muted(format!(".{ext}")));
+                }
+            });
+            if ui.input(|i| i.key_pressed(Key::Enter)) {
+                run = true;
+            }
+            if let Some(e) = &error {
+                ui.label(RichText::new(t(e)).color(pal().danger).size(13.0));
+            }
+            ui.label(muted("The file keeps its folder and format."));
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if accent_pill(ui, "Rename", true).clicked() {
+                    run = true;
+                }
+                if text_button(ui, None, "Cancel", true).clicked() {
+                    cancel = true;
+                }
+            });
+        });
+
+    if run {
+        match rename_clip(&clip, &stem) {
+            Ok(new_path) => {
+                if app.last_saved.as_ref() == Some(&clip.path) {
+                    app.last_saved = Some(new_path);
+                }
+                app.notify(t("Clip renamed"), false);
+                app.refresh_clips(true);
+                app.rename = None;
+            }
+            Err(e) => {
+                error = Some(e);
+            }
+        }
+    }
+
+    if cancel || !open {
+        app.rename = None;
+    } else if let Some(state) = &mut app.rename {
+        state.stem = stem;
+        state.error = error;
+        state.focus = focus;
+    }
+}
+
+/// Rename a clip in place. The extension is kept, Windows-hostile characters are cleaned,
+/// and an existing name gets a ` (2)` suffix instead of overwriting another clip.
+fn rename_clip(clip: &Clip, input: &str) -> Result<std::path::PathBuf, String> {
+    let ext = clip
+        .path
+        .extension()
+        .map(|e| e.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "mp4".into());
+    let mut stem = input.trim().to_string();
+    // Typing the extension yourself shouldn't produce "name.mp4.mp4".
+    let suffix = format!(".{ext}");
+    if stem.to_lowercase().ends_with(&suffix.to_lowercase()) {
+        stem.truncate(stem.len() - suffix.len());
+    }
+    if stem.trim().is_empty() {
+        return Err("Give the clip a name first.".into());
+    }
+    let stem = sanitize_file_name(stem.trim());
+    if stem.is_empty() {
+        return Err("That name can't be used. Try letters and numbers.".into());
+    }
+    let Some(dir) = clip.path.parent() else {
+        return Err("The clip's folder is missing.".into());
+    };
+    let candidate = dir.join(format!("{stem}.{ext}"));
+    if candidate == clip.path {
+        return Ok(clip.path.clone());
+    }
+    // Windows treats names that differ only by case as the same file, so a case-only
+    // rename should rename in place rather than create "name (2)".
+    let same_file = candidate.exists()
+        && candidate
+            .file_name()
+            .map(|n| n.to_string_lossy().eq_ignore_ascii_case(&clip.name))
+            .unwrap_or(false);
+    let target = if same_file {
+        candidate
+    } else if candidate.exists() {
+        unique_path(dir, &stem, &ext)
+    } else {
+        candidate
+    };
+    fs::rename(&clip.path, &target).map_err(|e| format!("Couldn't rename: {e}"))?;
+    Ok(target)
+}
+
 fn delete_window(app: &mut RewindApp, ctx: &egui::Context) {
     let Some(clip) = app.confirm_delete.clone() else {
         return;
     };
+    let permanent = app.cfg.delete_permanently;
     let mut keep_open = true;
     let mut keep_it = false;
     let mut delete = false;
@@ -1533,7 +1744,15 @@ fn delete_window(app: &mut RewindApp, ctx: &egui::Context) {
         .show(ctx, |ui| {
             ui.set_width(320.0);
             ui.label(bold(&clip.name));
-            ui.label(muted("It will be moved to the Recycle Bin."));
+            if permanent {
+                ui.label(
+                    RichText::new(t("It will be deleted permanently. This can't be undone."))
+                        .color(pal().danger)
+                        .size(13.0),
+                );
+            } else {
+                ui.label(muted("It will be moved to the Recycle Bin."));
+            }
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 if danger_pill(ui, "Delete").clicked() {
@@ -1836,14 +2055,23 @@ fn addons_page(app: &mut RewindApp, ui: &mut egui::Ui) {
         setting_row(
             ui,
             "Trigger phrase",
-            "Use words your language model knows, like \"clip that\".",
+            "Use words your language model knows, like \"clip that\" or \"klip al\".",
             false,
             |ui| {
-                ui.add(
-                    egui::TextEdit::singleline(&mut app.draft.voice.phrase)
-                        .desired_width(220.0)
-                        .margin(Margin::symmetric(10, 7)),
-                );
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut app.draft.voice.phrase)
+                            .desired_width(220.0)
+                            .margin(Margin::symmetric(10, 7)),
+                    );
+                    let default =
+                        default_phrase(Lang::from_id(&app.draft.voice.language)).to_string();
+                    if app.draft.voice.phrase.trim() != default
+                        && text_button(ui, None, "Use default", true).clicked()
+                    {
+                        app.draft.voice.phrase = default;
+                    }
+                });
             },
         );
         setting_row(
@@ -1869,6 +2097,30 @@ fn addons_page(app: &mut RewindApp, ui: &mut egui::Ui) {
                     status_text(ui, "Listening", pal().accent);
                 }
                 Some((VoiceStatus::Starting, _)) => status_text(ui, "Starting…", pal().muted),
+                Some((VoiceStatus::Phrase(w), _)) => {
+                    let quoted = w
+                        .missing
+                        .iter()
+                        .map(|word| format!("\"{word}\""))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let message = if super::i18n::lang() == Lang::Turkish {
+                        format!(
+                            "{} modeli şu kelimeleri bilmiyor: {}. \"{}\" dene.",
+                            w.lang.label(),
+                            quoted,
+                            w.suggestion
+                        )
+                    } else {
+                        format!(
+                            "The {} model doesn't know {}. Try \"{}\".",
+                            w.lang.label(),
+                            quoted,
+                            w.suggestion
+                        )
+                    };
+                    status_text(ui, &message, pal().danger)
+                }
                 Some((VoiceStatus::Error(e), _)) => status_text(ui, &e, pal().danger),
                 Some((VoiceStatus::Stopped, _)) | None => status_text(
                     ui,
@@ -1883,6 +2135,68 @@ fn addons_page(app: &mut RewindApp, ui: &mut egui::Ui) {
         });
     });
     ui.label(muted("Tip: press Apply after changing the phrase or language. Say it a little after you finish the moment you want to keep."));
+
+    // ---- Celebration effects
+    section_title(ui, "CELEBRATION EFFECTS");
+    card(ui, |ui| {
+        let installed = app.packs.effects.clone();
+        let available: Vec<_> = index
+            .as_ref()
+            .map(|i| {
+                i.effects
+                    .iter()
+                    .filter(|e| !installed.iter().any(|x| x.id == e.id))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        if installed.is_empty() && available.is_empty() {
+            ui.label(muted("No effect packs are available right now."));
+        }
+        for (i, p) in installed.iter().enumerate() {
+            let hint = if p.author.is_empty() {
+                format!("{} effects · Installed", p.styles.len())
+            } else {
+                format!("{} effects · by {}", p.styles.len(), p.author)
+            };
+            let id = p.id.clone();
+            setting_row(
+                ui,
+                &p.name,
+                &hint,
+                i + 1 == installed.len() && available.is_empty(),
+                |ui| {
+                    if text_button(ui, None, "Remove", true).clicked() {
+                        app.packs.remove_effects(&id);
+                        if !app.packs.available_effects().contains(&app.draft.effects) {
+                            app.draft.effects = EffectStyle::None;
+                        }
+                    }
+                    status_text(ui, "Installed", pal().accent);
+                },
+            );
+        }
+        for (i, p) in available.iter().enumerate() {
+            let hint = if p.author.is_empty() {
+                "Download to unlock these celebrations.".to_string()
+            } else {
+                tf("by {author}", &[("author", &p.author)])
+            };
+            let key = format!("effects-{}", p.id);
+            let p2 = p.clone();
+            setting_row(ui, &p.name, &hint, i + 1 == available.len(), |ui| {
+                pack_controls(
+                    app,
+                    ui,
+                    &key,
+                    false,
+                    true,
+                    move |a| a.packs.install_effects(&p2),
+                    |_| {},
+                );
+            });
+        }
+    });
 
     // ---- Themes
     section_title(ui, "THEMES");

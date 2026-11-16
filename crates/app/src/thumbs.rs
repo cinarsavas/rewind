@@ -36,8 +36,10 @@ type Key = (PathBuf, Option<SystemTime>);
 pub struct Thumbs {
     tx: Sender<Key>,
     rx: Receiver<(Key, Option<Raw>)>,
-    textures: HashMap<Key, Option<egui::TextureHandle>>,
+    /// Finished thumbnails with the tick they were last drawn on, for LRU eviction.
+    textures: HashMap<Key, (Option<egui::TextureHandle>, u64)>,
     requested: HashSet<Key>,
+    tick: u64,
 }
 
 impl Thumbs {
@@ -67,6 +69,7 @@ impl Thumbs {
             rx,
             textures: HashMap::new(),
             requested: HashSet::new(),
+            tick: 0,
         }
     }
 
@@ -78,8 +81,10 @@ impl Thumbs {
         modified: SystemTime,
     ) -> Option<egui::TextureHandle> {
         self.drain(ctx);
+        self.tick += 1;
         let key: Key = (path.to_path_buf(), Some(modified));
-        if let Some(t) = self.textures.get(&key) {
+        if let Some((t, used)) = self.textures.get_mut(&key) {
+            *used = self.tick;
             return t.clone();
         }
         if self.requested.insert(key.clone()) {
@@ -90,15 +95,25 @@ impl Thumbs {
 
     fn drain(&mut self, ctx: &egui::Context) {
         while let Ok((key, raw)) = self.rx.try_recv() {
-            if self.textures.len() >= MAX_TEXTURES {
-                self.textures.clear();
-                self.requested.clear();
+            // Evict the least recently drawn thumbnail instead of dropping the whole cache:
+            // clearing everything made a library of 100+ clips reload thumbnails forever.
+            while self.textures.len() >= MAX_TEXTURES {
+                let Some(oldest) = self
+                    .textures
+                    .iter()
+                    .min_by_key(|(_, (_, used))| *used)
+                    .map(|(k, _)| k.clone())
+                else {
+                    break;
+                };
+                self.textures.remove(&oldest);
+                self.requested.remove(&oldest);
             }
             let tex = raw.map(|r| {
                 let image = egui::ColorImage::from_rgba_unmultiplied([r.w, r.h], &r.rgba);
                 ctx.load_texture(key.0.to_string_lossy(), image, egui::TextureOptions::LINEAR)
             });
-            self.textures.insert(key, tex);
+            self.textures.insert(key, (tex, self.tick));
         }
     }
 

@@ -198,6 +198,11 @@ pub fn t(s: &str) -> &str {
         "Turn off to send clips straight to the Recycle Bin with one click." => {
             "Tek tıkla doğrudan Geri Dönüşüm Kutusuna göndermek için kapat."
         }
+        "Turn off to delete clips with one click." => "Klipleri tek tıkla silmek için kapat.",
+        "Delete permanently" => "Kalıcı olarak sil",
+        "Skip the Recycle Bin. Deleted clips can't be recovered." => {
+            "Geri Dönüşüm Kutusunu atla. Silinen klipler geri getirilemez."
+        }
         "Save folder" => "Kayıt klasörü",
         "Open folder" => "Klasörü aç",
         "Uses about {n} MB of RAM." => "Yaklaşık {n} MB RAM kullanır.",
@@ -266,9 +271,10 @@ pub fn t(s: &str) -> &str {
         "Save a clip when I say the phrase" => "Cümleyi söylediğimde klip kaydet",
         "Download the engine and a language first." => "Önce motoru ve bir dil indir.",
         "Trigger phrase" => "Tetik cümlesi",
-        "Use words your language model knows, like \"clip that\"." => {
+        "Use words your language model knows, like \"clip that\" or \"klip al\"." => {
             "Dil modelinin bildiği kelimeler kullan, örneğin \"klip al\"."
         },
+        "Use default" => "Varsayılanı kullan",
         "Sensitivity" => "Hassasiyet",
         "Higher picks up quieter speech but wakes more often." => {
             "Yüksek değer daha sessiz konuşmayı yakalar ama daha sık uyanır."
@@ -298,6 +304,14 @@ pub fn t(s: &str) -> &str {
             "İsteğe bağlı ekstralar. Buradakiler varsayılan olarak kurulu değildir, böylece Rewind küçük kalır."
         }
         "THEMES" => "TEMALAR",
+        "CELEBRATION EFFECTS" => "KUTLAMA EFEKTLERİ",
+        "Download effects in Add-ons first." => "Önce Eklentiler'den efekt indir.",
+        "Download a celebration pack from Add-ons to turn these on." => {
+            "Bunları açmak için Eklentiler'den bir kutlama paketi indir."
+        }
+        "Open Add-ons" => "Eklentileri aç",
+        "No effect packs are available right now." => "Şu anda kullanılabilir efekt paketi yok.",
+        "Download to unlock these celebrations." => "Bu kutlamaların kilidini açmak için indir.",
         "Mint (default)" => "Mint (varsayılan)",
         "Make your own: drop a theme .toml file into the themes folder, or start from the example." => {
             "Kendin yap: tema klasörüne bir .toml dosyası bırak veya örnekten başla."
@@ -354,7 +368,21 @@ pub fn t(s: &str) -> &str {
         "Keep it" => "Vazgeç",
         "Delete" => "Sil",
         "Moved to Recycle Bin" => "Geri Dönüşüm Kutusuna taşındı",
+        "It will be deleted permanently. This can't be undone." => {
+            "Kalıcı olarak silinecek. Bu geri alınamaz."
+        }
+        "Clip deleted" => "Klip silindi",
         "Couldn't delete: {e}" => "Silinemedi: {e}",
+        "Rename" => "Yeniden adlandır",
+        "Rename clip" => "Klibi yeniden adlandır",
+        "New name" => "Yeni ad",
+        "Clip renamed" => "Klip yeniden adlandırıldı",
+        "The file keeps its folder and format." => "Dosya klasörünü ve biçimini korur.",
+        "Give the clip a name first." => "Önce klibe bir ad ver.",
+        "That name can't be used. Try letters and numbers." => {
+            "Bu ad kullanılamaz. Harf ve rakam dene."
+        }
+        "The clip's folder is missing." => "Klibin klasörü bulunamadı.",
 
         // ---- startup / failure
         "Setting things up" => "Hazırlanıyor",
