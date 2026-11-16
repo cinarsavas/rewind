@@ -32,6 +32,15 @@ jobs:
           $v = if ("${{ github.ref_type }}" -eq "tag") { "${{ github.ref_name }}".TrimStart("v") } else { "0.0.0-dev" }
           "version=$v" >> $env:GITHUB_OUTPUT
 
+      - name: Tag must match the version in Cargo.toml
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        run: |
+          $cargo = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          if ($cargo -ne "${{ steps.ver.outputs.version }}") {
+            throw "Tag v${{ steps.ver.outputs.version }} doesn't match Cargo.toml ($cargo). Bump the version and commit before tagging."
+          }
+
       - run: cargo test -p rewind-core
       - run: cargo build --release -p rewind
 

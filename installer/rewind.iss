@@ -63,8 +63,21 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 
 [Run]
 Filename: "{app}\{#MyAppExe}"; Description: "Launch Rewind"; Flags: nowait postinstall skipifsilent
+; In-app updates run this installer silently with /RELAUNCH: start the new version afterwards.
+Filename: "{app}\{#MyAppExe}"; Parameters: "--updated"; Flags: nowait; Check: ShouldRelaunch
 
 [Code]
+// True when Rewind's own updater started this installer (it passes /RELAUNCH).
+function ShouldRelaunch: Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+  for I := 1 to ParamCount do
+    if CompareText(ParamStr(I), '/RELAUNCH') = 0 then
+      Result := True;
+end;
+
 // The app can also add its own "start with Windows" entry from Settings; remove it on uninstall,
 // and offer to remove settings and downloaded add-ons.
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);

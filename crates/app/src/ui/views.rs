@@ -1464,7 +1464,10 @@ fn about_page(app: &mut RewindApp, ui: &mut egui::Ui) {
     section_title(ui, "UPDATES");
     card(ui, |ui| {
         ui.horizontal(|ui| {
-            let busy = matches!(app.update_state, UpdateState::Checking);
+            let busy = matches!(
+                app.update_state,
+                UpdateState::Checking | UpdateState::Installing(..) | UpdateState::Restarting(_)
+            );
             if text_button(
                 ui,
                 None,
@@ -1479,6 +1482,7 @@ fn about_page(app: &mut RewindApp, ui: &mut egui::Ui) {
             {
                 app.check_updates();
             }
+            let mut install: Option<crate::updates::UpdateInfo> = None;
             match &app.update_state {
                 UpdateState::Idle => {
                     ui.label(muted("Not checked yet."));
@@ -1494,6 +1498,44 @@ fn about_page(app: &mut RewindApp, ui: &mut egui::Ui) {
                         RichText::new(tf("Version {v} is available.", &[("v", &info.version)]))
                             .color(pal().warn),
                     );
+                    if crate::updates::can_install(info)
+                        && accent_pill(ui, "Update now", true).clicked()
+                    {
+                        install = Some(info.clone());
+                    }
+                    let url = info.url.clone();
+                    if text_button(ui, None, "Open release page", true).clicked() {
+                        let _ = opener::open(&url);
+                    }
+                }
+                UpdateState::Installing(info, progress) => {
+                    let pct = (progress.fraction() * 100.0).round() as u32;
+                    ui.label(
+                        RichText::new(tf(
+                            "Downloading version {v}… {p}%",
+                            &[("v", &info.version), ("p", &pct.to_string())],
+                        ))
+                        .color(pal().accent),
+                    );
+                    ui.add(
+                        egui::ProgressBar::new(progress.fraction())
+                            .desired_width(160.0)
+                            .fill(pal().accent),
+                    );
+                }
+                UpdateState::Restarting(v) => {
+                    ui.label(
+                        RichText::new(tf("Restarting into version {v}…", &[("v", v)]))
+                            .color(pal().accent),
+                    );
+                }
+                UpdateState::InstallFailed(info, e) => {
+                    ui.label(
+                        RichText::new(tf("Couldn't update: {e}", &[("e", e)])).color(pal().danger),
+                    );
+                    if text_button(ui, None, "Try again", true).clicked() {
+                        install = Some(info.clone());
+                    }
                     let url = info.url.clone();
                     if text_button(ui, None, "Open release page", true).clicked() {
                         let _ = opener::open(&url);
@@ -1505,8 +1547,15 @@ fn about_page(app: &mut RewindApp, ui: &mut egui::Ui) {
                     );
                 }
             };
+            if let Some(info) = install {
+                app.install_update(info);
+            }
         });
-        if let UpdateState::Available(info) = &app.update_state {
+        let notes_for = match &app.update_state {
+            UpdateState::Available(info) | UpdateState::InstallFailed(info, _) => Some(info),
+            _ => None,
+        };
+        if let Some(info) = notes_for {
             let notes = info.notes.trim();
             if !notes.is_empty() {
                 ui.add_space(6.0);
@@ -1523,9 +1572,18 @@ fn about_page(app: &mut RewindApp, ui: &mut egui::Ui) {
             ui,
             "Check automatically at launch",
             "One small request to GitHub. No account or personal data is sent.",
-            true,
+            false,
             |ui| {
                 toggle(ui, &mut app.draft.check_updates);
+            },
+        );
+        setting_row(
+            ui,
+            "Install updates automatically",
+            "Downloads the new version, checks it and restarts Rewind. Off: just tell me and link to the release page.",
+            true,
+            |ui| {
+                toggle(ui, &mut app.draft.auto_install_updates);
             },
         );
     });

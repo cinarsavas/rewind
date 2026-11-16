@@ -60,15 +60,26 @@ pub enum Msg {
     Trimmed(Result<PathBuf, String>),
     Scanned(Vec<Clip>),
     Update(Result<Option<crate::updates::UpdateInfo>, String>),
+    /// The update is downloaded and the installer is waiting for Rewind to quit.
+    UpdateReady(Result<(), String>),
 }
 
 /// What the About page knows about newer releases.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone)]
 pub enum UpdateState {
     Idle,
     Checking,
     UpToDate,
     Available(crate::updates::UpdateInfo),
+    /// Downloading and verifying the new version; progress is shared with the worker.
+    Installing(
+        crate::updates::UpdateInfo,
+        std::sync::Arc<crate::download::Progress>,
+    ),
+    /// Installed copy is about to restart into the new version.
+    Restarting(String),
+    /// Installing failed; the release page is still offered.
+    InstallFailed(crate::updates::UpdateInfo, String),
     Failed(String),
 }
 
@@ -302,6 +313,7 @@ impl RewindApp {
             cc.egui_ctx
                 .send_viewport_cmd(egui::ViewportCommand::Visible(false));
         }
+        let just_updated = std::env::args().any(|a| a == "--updated");
         Self {
             draft: cfg.clone(),
             cfg,
@@ -315,7 +327,14 @@ impl RewindApp {
             capturing_hotkey: None,
             hotkey_capture_error: None,
             page: Page::Replay,
-            toast: None,
+            toast: just_updated.then(|| Toast {
+                text: i18n::tf(
+                    "Rewind updated to version {v}",
+                    &[("v", env!("CARGO_PKG_VERSION"))],
+                ),
+                is_error: false,
+                at: Instant::now(),
+            }),
             tx,
             rx,
             clips: Vec::new(),
@@ -395,7 +414,10 @@ impl RewindApp {
 
     /// Start a GitHub release check in the background.
     pub fn check_updates(&mut self) {
-        if matches!(self.update_state, UpdateState::Checking) {
+        if matches!(
+            self.update_state,
+            UpdateState::Checking | UpdateState::Installing(..) | UpdateState::Restarting(_)
+        ) {
             return;
         }
         self.update_state = UpdateState::Checking;
@@ -407,6 +429,39 @@ impl RewindApp {
             .spawn(move || {
                 let result = crate::updates::check(&repo);
                 let _ = tx.send(Msg::Update(result));
+                ctx.request_repaint();
+            })
+            .ok();
+    }
+
+    /// Download, verify and install `info`, then quit so the installer can replace the app.
+    pub fn install_update(&mut self, info: crate::updates::UpdateInfo) {
+        if matches!(
+            self.update_state,
+            UpdateState::Installing(..) | UpdateState::Restarting(_)
+        ) {
+            return;
+        }
+        if !crate::updates::can_install(&info) {
+            // Nothing installable in this release: fall back to the page.
+            self.update_state = UpdateState::Available(info);
+            return;
+        }
+        let progress = std::sync::Arc::new(crate::download::Progress::default());
+        self.update_state = UpdateState::Installing(info.clone(), progress.clone());
+        self.show_overlay(
+            ToastKind::Info,
+            "Updating Rewind",
+            &i18n::tf("Downloading version {v}…", &[("v", &info.version)]),
+            false,
+        );
+        let tx = self.tx.clone();
+        let ctx = self.ctx.clone();
+        std::thread::Builder::new()
+            .name("rewind-update-install".into())
+            .spawn(move || {
+                let result = crate::updates::prepare(&info, &progress);
+                let _ = tx.send(Msg::UpdateReady(result));
                 ctx.request_repaint();
             })
             .ok();
@@ -976,7 +1031,37 @@ impl RewindApp {
                 }
                 Msg::Scanned(clips) => self.accept_scan(clips),
                 Msg::Update(Ok(Some(info))) => {
-                    self.update_state = UpdateState::Available(info);
+                    if self.cfg.auto_install_updates && crate::updates::can_install(&info) {
+                        self.install_update(info);
+                    } else {
+                        self.update_state = UpdateState::Available(info);
+                    }
+                }
+                Msg::UpdateReady(Ok(())) => {
+                    let version = match &self.update_state {
+                        UpdateState::Installing(info, _) => info.version.clone(),
+                        _ => String::new(),
+                    };
+                    self.announce(
+                        ToastKind::Info,
+                        "Updating Rewind",
+                        &i18n::tf("Restarting into version {v}…", &[("v", &version)]),
+                    );
+                    self.update_state = UpdateState::Restarting(version);
+                    // Quit for real (not to the tray) so the installer can replace the files.
+                    self.quitting = true;
+                    self.ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                Msg::UpdateReady(Err(e)) => {
+                    let info = match std::mem::replace(&mut self.update_state, UpdateState::Idle) {
+                        UpdateState::Installing(info, _) => Some(info),
+                        _ => None,
+                    };
+                    self.notify(i18n::tf("Couldn't update: {e}", &[("e", &e)]), true);
+                    self.update_state = match info {
+                        Some(info) => UpdateState::InstallFailed(info, e),
+                        None => UpdateState::Failed(e),
+                    };
                 }
                 Msg::Update(Ok(None)) => self.update_state = UpdateState::UpToDate,
                 Msg::Update(Err(e)) => self.update_state = UpdateState::Failed(e),
@@ -1138,7 +1223,8 @@ impl eframe::App for RewindApp {
             // A full 60 fps burst only while something is actually moving (page slide, toast
             // fade, theme cross-fade). The recording pulse gets 10 fps, which is plenty for a
             // ~1.4 s breathing dot. Idle stays on the slow CPU/RAM sample cadence.
-            let animating = self.page_anim() < 1.0
+            let animating = matches!(self.update_state, UpdateState::Installing(..))
+                || self.page_anim() < 1.0
                 || theme::tweening()
                 || self.toast_alpha() < 1.0
                 || self.scroll_animating()

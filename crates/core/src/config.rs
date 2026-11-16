@@ -410,6 +410,8 @@ pub struct Config {
     pub delete_permanently: bool,
     /// Check GitHub for a newer release shortly after launch.
     pub check_updates: bool,
+    /// Download and install a newer release by itself. Off: only show it and link to GitHub.
+    pub auto_install_updates: bool,
     /// Id of the active theme; "default" is built in, others are optional downloads.
     pub theme: String,
     pub voice: VoiceConfig,
@@ -454,6 +456,7 @@ impl Default for Config {
             confirm_delete: true,
             delete_permanently: false,
             check_updates: true,
+            auto_install_updates: true,
             theme: "default".into(),
             voice: VoiceConfig::default(),
             audio: AudioConfig::default(),
@@ -578,6 +581,7 @@ impl Config {
         same.confirm_delete = self.confirm_delete;
         same.delete_permanently = self.delete_permanently;
         same.check_updates = self.check_updates;
+        same.auto_install_updates = self.auto_install_updates;
         same.theme = self.theme.clone();
         same.voice = self.voice.clone();
         *self != same

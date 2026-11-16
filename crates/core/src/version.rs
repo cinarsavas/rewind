@@ -26,8 +26,38 @@ pub fn newer(latest: &str, current: &str) -> bool {
     false
 }
 
+/// Find `file`'s SHA-256 in a `sha256sum` listing (`<hash>  <name>` or `<hash> *<name>`).
+pub fn checksum_for(sums: &str, file: &str) -> Option<String> {
+    sums.lines().find_map(|line| {
+        let mut it = line.split_whitespace();
+        let hash = it.next()?;
+        let name = it.next()?.trim_start_matches('*');
+        (name == file && hash.len() == 64 && hash.chars().all(|c| c.is_ascii_hexdigit()))
+            .then(|| hash.to_ascii_lowercase())
+    })
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn finds_checksums() {
+        let h = "a".repeat(64);
+        let sums = format!(
+            "{h}  Rewind-Setup-0.3.2.exe\n{}  Rewind-portable-x64.zip\n",
+            "B".repeat(64)
+        );
+        assert_eq!(
+            super::checksum_for(&sums, "Rewind-Setup-0.3.2.exe"),
+            Some(h)
+        );
+        assert_eq!(
+            super::checksum_for(&sums, "Rewind-portable-x64.zip"),
+            Some("b".repeat(64))
+        );
+        assert_eq!(super::checksum_for(&sums, "missing.zip"), None);
+        assert_eq!(super::checksum_for("short  a.zip", "a.zip"), None);
+    }
+
     use super::*;
 
     #[test]

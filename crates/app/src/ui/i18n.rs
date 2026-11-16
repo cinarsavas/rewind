@@ -372,6 +372,18 @@ pub fn t(s: &str) -> &str {
             "Kalıcı olarak silinecek. Bu geri alınamaz."
         }
         "Clip deleted" => "Klip silindi",
+        "Update now" => "Şimdi güncelle",
+        "Try again" => "Tekrar dene",
+        "Updating Rewind" => "Rewind güncelleniyor",
+        "Downloading version {v}…" => "{v} sürümü indiriliyor…",
+        "Downloading version {v}… {p}%" => "{v} sürümü indiriliyor… %{p}",
+        "Restarting into version {v}…" => "{v} sürümüyle yeniden başlatılıyor…",
+        "Couldn't update: {e}" => "Güncellenemedi: {e}",
+        "Rewind updated to version {v}" => "Rewind {v} sürümüne güncellendi",
+        "Install updates automatically" => "Güncellemeleri otomatik yükle",
+        "Downloads the new version, checks it and restarts Rewind. Off: just tell me and link to the release page." => {
+            "Yeni sürümü indirir, doğrular ve Rewind'ı yeniden başlatır. Kapalı: sadece haber ver ve sürüm sayfasına yönlendir."
+        }
         "Couldn't delete: {e}" => "Silinemedi: {e}",
         "Rename" => "Yeniden adlandır",
         "Rename clip" => "Klibi yeniden adlandır",

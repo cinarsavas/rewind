@@ -2,6 +2,15 @@
 
 All notable changes are listed here. The section for a tag becomes that release's notes.
 
+## [0.3.2]
+
+### Added
+- **Updates install themselves.** When Rewind finds a newer release (at launch, or when you press **Check for updates**), it downloads it, checks it against the release's SHA-256 list, closes, installs it and starts again on the new version. Installed copies run the new setup silently; portable copies replace their own folder. If you'd rather do it yourself, turn off About → **Install updates automatically** and Rewind will only tell you and link to the release page. **Update now** and **Open release page** are both on the About page.
+- A short "Rewind updated to version …" note after an update.
+
+### Fixed
+- **An update that "didn't apply".** The v0.3.1 release was built from the 0.3.0 code, so it still called itself 0.3.0 and kept offering the same update. Releases now refuse to build when the tag doesn't match the version in `Cargo.toml`.
+
 ## [0.3.1]
 
 ### Fixed
