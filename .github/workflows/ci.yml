@@ -32,7 +32,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy -p rewind --release
       - run: cargo build --release -p rewind
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: Rewind-exe-no-runtime
           path: target/release/rewind.exe
