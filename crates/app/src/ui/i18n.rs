@@ -271,9 +271,9 @@ pub fn t(s: &str) -> &str {
         "Save a clip when I say the phrase" => "Cümleyi söylediğimde klip kaydet",
         "Download the engine and a language first." => "Önce motoru ve bir dil indir.",
         "Trigger phrase" => "Tetik cümlesi",
-        "Use words your language model knows, like \"clip that\" or \"klip al\"." => {
-            "Dil modelinin bildiği kelimeler kullan, örneğin \"klip al\"."
-        },
+        "Use words your language model knows, like \"clip that\" or \"klip al\". Separate several with commas: \"klip al, klibi al\"." => {
+            "Dil modelinin bildiği kelimeler kullan, örneğin \"klip al\". Birden fazlasını virgülle ayır: \"klip al, klibi al\"."
+        }
         "Use default" => "Varsayılanı kullan",
         "Sensitivity" => "Hassasiyet",
         "Higher picks up quieter speech but wakes more often." => {
@@ -373,6 +373,46 @@ pub fn t(s: &str) -> &str {
         }
         "Clip deleted" => "Klip silindi",
         "Update now" => "Şimdi güncelle",
+        "Strictness" => "Seçicilik",
+        "Relaxed" => "Rahat",
+        "Normal" => "Normal",
+        "Strict" => "Sıkı",
+        "Relaxed misses less and allows a word or two around the phrase; Strict saves fewer clips by mistake." => {
+            "Rahat daha az kaçırır ve cümlenin çevresinde bir iki kelimeye izin verir; Sıkı yanlışlıkla daha az klip kaydeder."
+        }
+        "Previewing {name}" => "Önizleniyor: {name}",
+        "Not installed. It disappears when you leave this page." => {
+            "Kurulu değil. Bu sayfadan çıkınca kaybolur."
+        }
+        "End preview" => "Önizlemeyi bitir",
+        "Install it" => "Kur",
+        "Previewing" => "Önizleniyor",
+        "Loading…" => "Yükleniyor…",
+        "Sound" => "Ses",
+        "Rewind chime" => "Rewind zil sesi",
+        "Add your own .mp3 or .wav by dragging it onto Rewind (see Add-ons)." => {
+            "Kendi .mp3 veya .wav dosyanı Rewind'ın üzerine sürükleyerek ekle (Eklentiler'e bak)."
+        }
+        "CUSTOM SOUNDS" => "ÖZEL SESLER",
+        "Clip-saved sounds" => "Klip kaydedilince çalan sesler",
+        "{n} of {max} · drag an .mp3 or .wav onto Rewind to add one" => {
+            "{n}/{max} · eklemek için Rewind'ın üzerine bir .mp3 veya .wav sürükle"
+        }
+        "{n} sounds · drag an .mp3 or .wav onto Rewind to add one" => {
+            "{n} ses · eklemek için Rewind'ın üzerine bir .mp3 veya .wav sürükle"
+        }
+        "Open sounds folder" => "Ses klasörünü aç",
+        "Plays when a clip is saved" => "Klip kaydedilince çalar",
+        "Limit to 5 sounds" => "En fazla 5 ses",
+        "Turn off to keep as many as you like." => "İstediğin kadar ses tutmak için kapat.",
+        "Added sound: {name}" => "Ses eklendi: {name}",
+        "Couldn't add the sound: {e}" => "Ses eklenemedi: {e}",
+        "Test" => "Test et",
+        "Stop test" => "Testi bitir",
+        "Say \"{phrase}\" to test it… (closes in {s} s)" => {
+            "Test etmek için \"{phrase}\" de… ({s} sn içinde kapanır)"
+        }
+        "Test closes in {s} s" => "Test {s} sn içinde kapanır",
         "Size" => "Boyut",
         "Thumbnail size (Ctrl + mouse wheel)" => "Küçük resim boyutu (Ctrl + fare tekerleği)",
         "HOVER PREVIEWS" => "ÜZERİNE GELİNCE ÖNİZLEME",

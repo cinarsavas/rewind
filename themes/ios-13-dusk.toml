@@ -1,0 +1,20 @@
+name = "iOS 13 Dusk"
+author = "Rewind"
+# Inspired by the iOS 13 dark abstract wallpaper: charcoal with a warm orange glow.
+
+[colors]
+nav = "#0b0b0d"
+panel = "#111114"
+card = "#1a1a1f"
+card_hi = "#24242b"
+stroke = "#2e2e37"
+text = "#f2f2f5"
+muted = "#9c9ca8"
+faint = "#686874"
+accent = "#ff7043"
+danger = "#ff5a5f"
+warn = "#ffc04d"
+
+[layout]
+background_top = "#1b1012"
+background_bottom = "#0d0d10"

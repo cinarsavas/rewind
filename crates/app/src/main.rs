@@ -13,6 +13,7 @@ mod perf;
 mod platform;
 mod preview;
 mod runtime;
+mod sounds;
 mod thumbs;
 mod tray;
 mod ui;

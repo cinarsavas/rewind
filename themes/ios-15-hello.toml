@@ -1,0 +1,20 @@
+name = "iOS 15 Hello"
+author = "Rewind"
+# Inspired by the iOS 15 flowing wallpaper: indigo fading into violet.
+
+[colors]
+nav = "#0b0a1c"
+panel = "#110f28"
+card = "#1a1736"
+card_hi = "#241f47"
+stroke = "#312a5c"
+text = "#f0eeff"
+muted = "#a39dce"
+faint = "#6c6596"
+accent = "#8f8cff"
+danger = "#ff5d7a"
+warn = "#ffc75f"
+
+[layout]
+background_top = "#241a52"
+background_bottom = "#0d0b22"

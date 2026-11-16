@@ -1,0 +1,20 @@
+name = "iOS 18 Aurora"
+author = "Rewind"
+# Inspired by the iOS 18 colourful dark wallpaper: midnight with magenta and teal light.
+
+[colors]
+nav = "#080a14"
+panel = "#0c0f1d"
+card = "#141829"
+card_hi = "#1c2136"
+stroke = "#272d47"
+text = "#eef0fb"
+muted = "#9aa0c0"
+faint = "#646a8a"
+accent = "#e07bff"
+danger = "#ff5d6c"
+warn = "#ffc65c"
+
+[layout]
+background_top = "#1d1240"
+background_bottom = "#081422"

@@ -1,0 +1,16 @@
+name = "Nothing Mono"
+author = "Rewind"
+# Inspired by the Nothing Phone: pure monochrome with a signal-red accent.
+
+[colors]
+nav = "#000000"
+panel = "#050505"
+card = "#101010"
+card_hi = "#1a1a1a"
+stroke = "#2a2a2a"
+text = "#f4f4f4"
+muted = "#a0a0a0"
+faint = "#6a6a6a"
+accent = "#ff3b30"
+danger = "#ff6b62"
+warn = "#ffd60a"

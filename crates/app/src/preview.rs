@@ -2,19 +2,25 @@
 //!
 //! When the pointer rests on a clip's thumbnail, the last 20 seconds of that clip play as a
 //! small looping flip-book. Frames come from the add-on's ffmpeg.exe, once per clip, and are
-//! cached on disk as small JPEGs, so the second hover is instant.
+//! cached on disk as small JPEGs.
 //!
-//! Kept deliberately gentle so nothing stutters:
-//! - nothing runs until you hover a clip; only the newest request is worked on;
-//! - ffmpeg runs at below-normal priority, with 2 threads and GPU decoding when available;
-//! - only the hovered clip's frames are held in memory, and the UI uploads one small frame
-//!   texture at a time (about 10 per second, only while hovering).
+//! To make hovering feel instant:
+//! - while Rewind's window is in front, the clips you can see are prepared in the background,
+//!   one at a time, at idle priority on one thread, so they're usually ready before you hover;
+//! - a hover jumps the queue and stops any background job, and runs at normal priority with
+//!   all threads, skipping frames that nothing depends on;
+//! - decoded frames for the last few hovered clips stay in memory.
+//!
+//! Nothing runs while you're in a game (Rewind isn't in front then), and the UI uploads one
+//! small texture at a time, only while hovering.
 
 use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
-use std::time::{Instant, SystemTime};
+use std::process::Child;
+use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
+use std::time::{Duration, Instant, SystemTime};
 
 use eframe::egui;
 
@@ -26,12 +32,16 @@ const PLAY_FPS: f32 = 10.0;
 const FRAME_WIDTH: u32 = 320;
 /// Previews kept on disk before the oldest are removed.
 const MAX_CACHED: usize = 150;
+/// Decoded clips kept in memory for quick back-and-forth hovering.
+const IN_MEMORY: usize = 4;
 
 type Key = (PathBuf, SystemTime);
 
-struct Job {
-    key: Key,
-    ffmpeg: PathBuf,
+enum Cmd {
+    /// The pointer is on this clip: do it now and send the frames back.
+    Hover(Key, PathBuf),
+    /// Prepare this clip's frames on disk in the background.
+    Prefetch(Key, PathBuf),
 }
 
 enum Done {
@@ -53,10 +63,11 @@ pub enum Frame<'a> {
 }
 
 pub struct Previews {
-    tx: Sender<Job>,
+    tx: Sender<Cmd>,
     rx: Receiver<Done>,
-    /// The hovered clip (and at most one previous one, for quick back-and-forth).
+    /// Recently hovered clips, oldest first.
     states: Vec<(Key, State)>,
+    prefetched: HashSet<Key>,
     texture: Option<egui::TextureHandle>,
     shown: Option<(Key, usize)>,
     hover_started: Instant,
@@ -65,35 +76,17 @@ pub struct Previews {
 
 impl Previews {
     pub fn new(cache_dir: PathBuf, ctx: egui::Context) -> Self {
-        let (tx, jobs) = channel::<Job>();
+        let (tx, cmds) = channel::<Cmd>();
         let (done_tx, rx) = channel::<Done>();
         std::thread::Builder::new()
             .name("rewind-preview".into())
-            .spawn(move || {
-                while let Ok(mut job) = jobs.recv() {
-                    // Only the latest hover matters; skip anything the pointer already left.
-                    loop {
-                        match jobs.try_recv() {
-                            Ok(newer) => job = newer,
-                            Err(TryRecvError::Empty) => break,
-                            Err(TryRecvError::Disconnected) => return,
-                        }
-                    }
-                    let msg = match build(&cache_dir, &job) {
-                        Ok(frames) => Done::Ready(job.key, frames),
-                        Err(e) => Done::Failed(job.key, e),
-                    };
-                    if done_tx.send(msg).is_err() {
-                        return;
-                    }
-                    ctx.request_repaint();
-                }
-            })
+            .spawn(move || worker(&cache_dir, &cmds, &done_tx, &ctx))
             .ok();
         Self {
             tx,
             rx,
             states: Vec::new(),
+            prefetched: HashSet::new(),
             texture: None,
             shown: None,
             hover_started: Instant::now(),
@@ -114,9 +107,12 @@ impl Previews {
         }
     }
 
-    /// Call once per frame before drawing rows: forgets the hover if no row claimed it.
-    pub fn begin_frame(&mut self) {
-        self.drain();
+    /// Ask for this clip to be prepared in the background (visible rows, window in front).
+    pub fn prefetch(&mut self, path: &Path, modified: SystemTime, ffmpeg: &Path) {
+        let key: Key = (path.to_path_buf(), modified);
+        if self.prefetched.insert(key.clone()) {
+            let _ = self.tx.send(Cmd::Prefetch(key, ffmpeg.to_path_buf()));
+        }
     }
 
     /// Called by the hovered thumbnail. Returns what to draw over it.
@@ -127,28 +123,38 @@ impl Previews {
         modified: SystemTime,
         ffmpeg: &Path,
     ) -> Frame<'_> {
+        self.drain();
         let key: Key = (path.to_path_buf(), modified);
-        if self.hovered.as_ref() != Some(&key) {
+        let new_hover = self.hovered.as_ref() != Some(&key);
+        if new_hover {
             self.hovered = Some(key.clone());
             self.hover_started = Instant::now();
         }
-        if !self.states.iter().any(|(k, _)| *k == key) {
-            // Keep the previous clip too, drop anything older.
-            if self.states.len() >= 2 {
-                self.states.remove(0);
+        match self.states.iter().position(|(k, _)| *k == key) {
+            Some(i) => {
+                // Most recently used goes last; a failed one is retried on a new hover.
+                let entry = self.states.remove(i);
+                let retry = matches!(entry.1, State::Failed(_));
+                self.states.push(entry);
+                if retry && new_hover {
+                    self.states.last_mut().unwrap().1 = State::Loading;
+                    let _ = self.tx.send(Cmd::Hover(key.clone(), ffmpeg.to_path_buf()));
+                }
             }
-            self.states.push((key.clone(), State::Loading));
-            let _ = self.tx.send(Job {
-                key: key.clone(),
-                ffmpeg: ffmpeg.to_path_buf(),
-            });
+            None => {
+                if self.states.len() >= IN_MEMORY {
+                    self.states.remove(0);
+                }
+                self.states.push((key.clone(), State::Loading));
+                let _ = self.tx.send(Cmd::Hover(key.clone(), ffmpeg.to_path_buf()));
+            }
         }
-        let Some((_, state)) = self.states.iter().find(|(k, _)| *k == key) else {
+        let Some((_, state)) = self.states.last() else {
             return Frame::Loading;
         };
         match state {
             State::Loading => {
-                ctx.request_repaint_after(std::time::Duration::from_millis(250));
+                ctx.request_repaint_after(Duration::from_millis(60));
                 Frame::Loading
             }
             State::Failed(e) => Frame::Failed(e),
@@ -170,7 +176,7 @@ impl Previews {
                     }
                     self.shown = Some((key, i));
                 }
-                ctx.request_repaint_after(std::time::Duration::from_secs_f32(1.0 / PLAY_FPS));
+                ctx.request_repaint_after(Duration::from_secs_f32(1.0 / PLAY_FPS));
                 match &self.texture {
                     Some(tex) => Frame::Ready(tex, (i + 1) as f32 / n as f32),
                     None => Frame::Loading,
@@ -182,61 +188,83 @@ impl Previews {
     /// The pointer left every thumbnail: restart the loop next time.
     pub fn unhover(&mut self) {
         self.hovered = None;
+        self.shown = None;
     }
 }
 
-fn cache_key(path: &Path, modified: SystemTime) -> String {
-    let mut h = DefaultHasher::new();
-    path.hash(&mut h);
-    modified.hash(&mut h);
-    format!("{:016x}", h.finish())
-}
-
-/// Extract (or reuse) the frames for one clip and decode them.
-fn build(cache_dir: &Path, job: &Job) -> Result<Vec<egui::ColorImage>, String> {
-    let (path, modified) = &job.key;
-    let dir = cache_dir.join(cache_key(path, *modified));
-    let done = dir.join("done");
-    if !done.is_file() {
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).map_err(|e| format!("cache folder: {e}"))?;
-        prune(cache_dir, &dir);
-        let mut cmd = std::process::Command::new(&job.ffmpeg);
-        cmd.args([
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-nostdin",
-            "-threads",
-            "2",
-        ])
-        .args(["-hwaccel", "auto"])
-        .args(["-sseof", &format!("-{SPAN_SECS}")])
-        .arg("-i")
-        .arg(path)
-        .args([
-            "-an",
-            "-vf",
-            &format!("fps={EXTRACT_FPS},scale={FRAME_WIDTH}:-2"),
-            "-q:v",
-            "6",
-        ])
-        .arg(dir.join("f%03d.jpg"));
-        #[cfg(windows)]
+/// The preview thread: hovers first, background preparation when nothing else is asked for.
+fn worker(cache_dir: &Path, cmds: &Receiver<Cmd>, done: &Sender<Done>, ctx: &egui::Context) {
+    let mut hover: Option<(Key, PathBuf)> = None;
+    let mut background: VecDeque<(Key, PathBuf)> = VecDeque::new();
+    loop {
+        // Collect everything waiting; only the newest hover counts.
+        let first = if hover.is_none() && background.is_empty() {
+            match cmds.recv() {
+                Ok(c) => Some(c),
+                Err(_) => return,
+            }
+        } else {
+            None
+        };
+        for cmd in first
+            .into_iter()
+            .chain(std::iter::from_fn(|| cmds.try_recv().ok()))
         {
-            use std::os::windows::process::CommandExt;
-            // CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS: no console, and games come first.
-            cmd.creation_flags(0x0800_0000 | 0x0000_4000);
+            match cmd {
+                Cmd::Hover(k, f) => hover = Some((k, f)),
+                Cmd::Prefetch(k, f) => background.push_back((k, f)),
+            }
         }
-        let out = cmd
-            .output()
-            .map_err(|e| format!("couldn't run ffmpeg: {e}"))?;
-        if !out.status.success() {
-            let err = String::from_utf8_lossy(&out.stderr);
-            return Err(err.lines().last().unwrap_or("ffmpeg failed").to_string());
+
+        if let Some((key, ffmpeg)) = hover.take() {
+            let msg = match frames_for(cache_dir, &key, &ffmpeg, true, None) {
+                Ok(frames) => Done::Ready(key, frames),
+                Err(e) => Done::Failed(key, e),
+            };
+            if done.send(msg).is_err() {
+                return;
+            }
+            ctx.request_repaint();
+            continue;
         }
-        let _ = std::fs::write(&done, b"");
+
+        if let Some((key, ffmpeg)) = background.pop_front() {
+            // Stop if a hover arrives meanwhile; it is handled next, and this clip is
+            // prepared again later if still needed.
+            let mut interrupted = None;
+            let _ = extract(
+                cache_dir,
+                &key,
+                &ffmpeg,
+                false,
+                Some((cmds, &mut interrupted)),
+            );
+            if let Some(cmd) = interrupted {
+                match cmd {
+                    Cmd::Hover(k, f) => hover = Some((k, f)),
+                    Cmd::Prefetch(k, f) => background.push_back((k, f)),
+                }
+            }
+        }
     }
+}
+
+fn cache_dir_for(cache_dir: &Path, key: &Key) -> PathBuf {
+    let mut h = DefaultHasher::new();
+    key.0.hash(&mut h);
+    key.1.hash(&mut h);
+    cache_dir.join(format!("{:016x}", h.finish()))
+}
+
+/// Make sure the frames are on disk, then decode them.
+fn frames_for(
+    cache_dir: &Path,
+    key: &Key,
+    ffmpeg: &Path,
+    foreground: bool,
+    interrupt: Option<(&Receiver<Cmd>, &mut Option<Cmd>)>,
+) -> Result<Vec<egui::ColorImage>, String> {
+    let dir = extract(cache_dir, key, ffmpeg, foreground, interrupt)?;
     let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
         .map_err(|e| format!("cache folder: {e}"))?
         .flatten()
@@ -255,6 +283,96 @@ fn build(cache_dir: &Path, job: &Job) -> Result<Vec<egui::ColorImage>, String> {
         ));
     }
     Ok(frames)
+}
+
+/// Run ffmpeg for one clip unless its frames are already cached. Returns the frame folder.
+/// With `interrupt`, a new command arriving stops ffmpeg; it is handed back to the caller.
+fn extract(
+    cache_dir: &Path,
+    key: &Key,
+    ffmpeg: &Path,
+    foreground: bool,
+    mut interrupt: Option<(&Receiver<Cmd>, &mut Option<Cmd>)>,
+) -> Result<PathBuf, String> {
+    let dir = cache_dir_for(cache_dir, key);
+    let done = dir.join("done");
+    if done.is_file() {
+        return Ok(dir);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("cache folder: {e}"))?;
+    prune(cache_dir, &dir);
+
+    let mut cmd = std::process::Command::new(ffmpeg);
+    cmd.args(["-hide_banner", "-loglevel", "error", "-nostdin"])
+        // A hover gets every core; background work stays on one.
+        .args(["-threads", if foreground { "0" } else { "1" }])
+        .args(["-hwaccel", "auto"])
+        // Frames nothing else depends on can be skipped; at 5 frames a second they're
+        // never missed, and decoding gets much cheaper.
+        .args(["-skip_frame", "nonref"])
+        .args(["-sseof", &format!("-{SPAN_SECS}")])
+        .arg("-i")
+        .arg(&key.0)
+        .args([
+            "-an",
+            "-vf",
+            &format!("fps={EXTRACT_FPS},scale={FRAME_WIDTH}:-2"),
+            "-q:v",
+            "6",
+        ])
+        .arg(dir.join("f%03d.jpg"))
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW, plus IDLE_PRIORITY_CLASS for background work so anything else
+        // on the PC always comes first.
+        let priority = if foreground { 0 } else { 0x0000_0040 };
+        cmd.creation_flags(0x0800_0000 | priority);
+    }
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("couldn't run ffmpeg: {e}"))?;
+    let status = loop {
+        if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+            break status;
+        }
+        if let Some((cmds, slot)) = interrupt.as_mut() {
+            match cmds.recv_timeout(Duration::from_millis(40)) {
+                Ok(cmd) => {
+                    **slot = Some(cmd);
+                    stop(&mut child);
+                    let _ = std::fs::remove_dir_all(&dir);
+                    return Err("interrupted".into());
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => {
+                    stop(&mut child);
+                    return Err("closing".into());
+                }
+            }
+        } else {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    if !status.success() {
+        let mut err = String::new();
+        if let Some(mut e) = child.stderr.take() {
+            use std::io::Read;
+            let _ = e.read_to_string(&mut err);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        return Err(err.lines().last().unwrap_or("ffmpeg failed").to_string());
+    }
+    let _ = std::fs::write(&done, b"");
+    Ok(dir)
+}
+
+fn stop(child: &mut Child) {
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 /// Keep the cache bounded: remove the oldest previews beyond [`MAX_CACHED`].

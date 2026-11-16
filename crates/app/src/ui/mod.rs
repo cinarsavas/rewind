@@ -214,6 +214,8 @@ pub struct RewindApp {
     /// When an errored listener should be tried again.
     voice_retry_at: Option<Instant>,
     pub voice_error: Option<String>,
+    /// While set and in the future, the voice test panel is open (live meter, last heard).
+    pub voice_test_until: Option<Instant>,
     page_changed: Instant,
     page_dir: f32,
     applied_theme: String,
@@ -385,6 +387,7 @@ impl RewindApp {
             voice_running_cfg: None,
             voice_retry_at: None,
             voice_error: None,
+            voice_test_until: None,
             page_changed: Instant::now(),
             page_dir: 1.0,
             applied_theme: cfg_theme,
@@ -425,6 +428,48 @@ impl RewindApp {
         }
     }
 
+    /// Add sounds dropped onto the window. Other files are ignored.
+    fn take_dropped_sounds(&mut self, ctx: &egui::Context) {
+        let dropped: Vec<PathBuf> = ctx.input(|i| {
+            i.raw
+                .dropped_files
+                .iter()
+                .map(|f| f.path().to_path_buf())
+                .filter(|p| crate::sounds::accepts(p))
+                .collect()
+        });
+        if dropped.is_empty() {
+            return;
+        }
+        let limit = self.cfg.limit_custom_sounds.then_some(crate::sounds::LIMIT);
+        for path in dropped {
+            match crate::sounds::import(&sounds_dir(), &path, limit) {
+                Ok(name) => {
+                    self.notify(i18n::tf("Added sound: {name}", &[("name", &name)]), false);
+                    // A first custom sound becomes the one that plays, without needing Apply.
+                    if self.cfg.clip_sound.is_empty() {
+                        self.cfg.clip_sound = name.clone();
+                        self.draft.clip_sound = name;
+                        self.save_quietly();
+                    }
+                }
+                Err(e) => self.notify(i18n::tf("Couldn't add the sound: {e}", &[("e", &e)]), true),
+            }
+        }
+    }
+
+    /// Remove a custom sound; if it was the active one, go back to the chime.
+    pub fn remove_sound(&mut self, name: &str) {
+        crate::sounds::remove(&sounds_dir(), name);
+        if self.cfg.clip_sound == name {
+            self.cfg.clip_sound.clear();
+            self.save_quietly();
+        }
+        if self.draft.clip_sound == name {
+            self.draft.clip_sound.clear();
+        }
+    }
+
     /// Persist a setting changed outside the Apply flow (like the Clips page zoom).
     pub fn save_quietly(&self) {
         let _ = self.cfg.save_to(&self.cfg_path);
@@ -438,17 +483,43 @@ impl RewindApp {
 
     /// Switch to the theme in the draft: colours cross-fade, layout and background swap at
     /// once. Called when the theme picker changes, so previews are immediate.
+    /// The theme on screen: a preview while one is shown, otherwise the chosen theme.
+    pub fn effective_theme(&self) -> String {
+        self.packs
+            .preview
+            .as_ref()
+            .map(|(t, _)| t.id.clone())
+            .unwrap_or_else(|| self.draft.theme.clone())
+    }
+
+    /// Stop showing a previewed theme; nothing of it stays installed.
+    pub fn end_theme_preview(&mut self) {
+        if self.packs.preview.is_some() {
+            self.packs.end_preview();
+        }
+    }
+
+    /// Install the previewed theme for real and switch to it.
+    pub fn keep_theme_preview(&mut self) {
+        if let Some((_, pack)) = self.packs.preview.clone() {
+            self.packs.install_theme(&pack);
+            self.draft.theme = pack.id.clone();
+            self.packs.end_preview();
+        }
+    }
+
     pub fn apply_theme(&mut self, ctx: &egui::Context) {
-        let palette = self.packs.palette_for(&self.draft.theme);
+        let id = self.effective_theme();
+        let palette = self.packs.palette_for(&id);
         let layout = theme::resolve_layout(
-            &self.packs.layout_for(&self.draft.theme),
-            self.packs.background_for(&self.draft.theme).as_deref(),
+            &self.packs.layout_for(&id),
+            self.packs.background_for(&id).as_deref(),
             ctx,
         );
         theme::fade_to(ctx, &palette);
         theme::set_layout(layout);
         theme::apply_visuals(ctx);
-        self.applied_theme = self.draft.theme.clone();
+        self.applied_theme = id;
     }
 
     /// Start a GitHub release check in the background.
@@ -521,6 +592,10 @@ impl RewindApp {
             self.scroll_target = 0.0;
             self.scroll_max = 0.0;
             self.list_shown = Instant::now();
+            // A theme preview only lives while you're looking at it on the Add-ons page.
+            if self.page != Page::Addons {
+                self.end_theme_preview();
+            }
             if page == Page::Addons {
                 self.packs.scan_themes();
                 if self.packs.index.is_none() {
@@ -1178,7 +1253,7 @@ impl RewindApp {
                         .unwrap_or_default();
                     self.last_saved = Some(path);
                     if self.cfg.sound_on_save {
-                        platform::clip_saved_sound();
+                        crate::sounds::play_clip_saved(&sounds_dir(), &self.cfg.clip_sound);
                     }
                     self.announce(ToastKind::Success, "Replay saved", &name);
                     self.refresh_clips(true);
@@ -1313,6 +1388,11 @@ impl RewindApp {
     }
 }
 
+/// Custom clip-saved sounds (.mp3 / .wav).
+pub fn sounds_dir() -> PathBuf {
+    directories_dir().join("sounds")
+}
+
 pub fn themes_dir() -> PathBuf {
     directories_dir().join("packs").join("themes")
 }
@@ -1328,6 +1408,7 @@ impl eframe::App for RewindApp {
         // The language follows the applied config, so a change only takes effect on Apply.
         i18n::set_lang(self.cfg.language);
         self.drain_messages();
+        self.take_dropped_sounds(ctx);
         if self.engine.is_some() {
             self.refresh_buffer_state(false);
         }
@@ -1336,8 +1417,15 @@ impl eframe::App for RewindApp {
 
         for ev in self.packs.poll() {
             match ev {
+                PackEvent::Previewing(name) => {
+                    self.notify(i18n::tf("Previewing {name}", &[("name", &name)]), false);
+                }
                 PackEvent::Installed(key) => {
                     self.notify(i18n::tf("Installed {key}", &[("key", &key)]), false);
+                    if key.starts_with("theme-") {
+                        // The chosen theme may have just arrived: draw it again.
+                        self.applied_theme.clear();
+                    }
                     self.invalidate_voice_files();
                     self.refresh_preview_exe();
                     if !self.packs.available_effects().contains(&self.draft.effects) {
@@ -1360,7 +1448,7 @@ impl eframe::App for RewindApp {
             self.check_updates();
         }
         // Live theme / animation preview while editing settings.
-        if self.applied_theme != self.draft.theme {
+        if self.applied_theme != self.effective_theme() {
             self.apply_theme(ctx);
         }
         if theme::animations_on() != self.draft.animations {

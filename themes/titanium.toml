@@ -1,0 +1,20 @@
+name = "Titanium"
+author = "Rewind"
+# Inspired by the titanium iPhone Pro finishes: warm greys with a brushed-metal accent.
+
+[colors]
+nav = "#0f0f10"
+panel = "#151517"
+card = "#1e1e21"
+card_hi = "#28282c"
+stroke = "#353539"
+text = "#f0eeea"
+muted = "#a7a39b"
+faint = "#716d66"
+accent = "#c9b79c"
+danger = "#ff6b6b"
+warn = "#e8c06a"
+
+[layout]
+background_top = "#1d1c1b"
+background_bottom = "#101012"

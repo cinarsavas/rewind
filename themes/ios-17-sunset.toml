@@ -1,0 +1,20 @@
+name = "iOS 17 Sunset"
+author = "Rewind"
+# Inspired by the iOS 17 warm gradient: plum shadows with a peach glow.
+
+[colors]
+nav = "#140b10"
+panel = "#1b0f16"
+card = "#26161f"
+card_hi = "#321d29"
+stroke = "#432737"
+text = "#fff0f2"
+muted = "#c4a2ae"
+faint = "#8a6b76"
+accent = "#ff9f7a"
+danger = "#ff5d6c"
+warn = "#ffc65c"
+
+[layout]
+background_top = "#3a1a2c"
+background_bottom = "#150b11"

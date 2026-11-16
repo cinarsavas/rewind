@@ -336,6 +336,44 @@ pub struct VoiceConfig {
     pub phrase: String,
     /// 0.0 (needs a loud voice) ..= 1.0 (picks up quiet speech).
     pub sensitivity: f32,
+    /// How sure the recogniser must be before a clip is saved.
+    pub strictness: Strictness,
+}
+
+/// How picky voice clipping is. Relaxed misses less but may save a clip by mistake more often.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Strictness {
+    Relaxed,
+    #[default]
+    Normal,
+    Strict,
+}
+
+impl Strictness {
+    pub const ALL: [Strictness; 3] = [Strictness::Relaxed, Strictness::Normal, Strictness::Strict];
+    pub fn label(self) -> &'static str {
+        match self {
+            Strictness::Relaxed => "Relaxed",
+            Strictness::Normal => "Normal",
+            Strictness::Strict => "Strict",
+        }
+    }
+    /// Lowest per-word confidence that still counts.
+    pub fn min_confidence(self) -> f32 {
+        match self {
+            Strictness::Relaxed => 0.45,
+            Strictness::Normal => 0.65,
+            Strictness::Strict => 0.8,
+        }
+    }
+    /// Other words allowed around the phrase.
+    pub fn slack(self) -> usize {
+        match self {
+            Strictness::Relaxed => 2,
+            Strictness::Normal | Strictness::Strict => 0,
+        }
+    }
 }
 
 impl Default for VoiceConfig {
@@ -345,6 +383,7 @@ impl Default for VoiceConfig {
             language: "en-us".into(),
             phrase: default_phrase(Lang::English).into(),
             sensitivity: 0.5,
+            strictness: Strictness::Normal,
         }
     }
 }
@@ -388,6 +427,10 @@ pub struct Config {
     pub overlay_secs: u32,
     /// Play a short system sound when a clip is saved (works even where the overlay can't draw).
     pub sound_on_save: bool,
+    /// File name of a custom clip-saved sound in the sounds folder; empty = built-in chime.
+    pub clip_sound: String,
+    /// Keep at most 5 custom sounds (switchable in Add-ons).
+    pub limit_custom_sounds: bool,
     /// Closing the window hides it to the tray instead of quitting.
     pub close_to_tray: bool,
     pub start_minimized: bool,
@@ -448,6 +491,8 @@ impl Default for Config {
             overlay_corner: Corner::TopRight,
             overlay_secs: 3,
             sound_on_save: true,
+            clip_sound: String::new(),
+            limit_custom_sounds: true,
             close_to_tray: true,
             start_minimized: false,
             launch_at_login: false,
@@ -580,6 +625,8 @@ impl Config {
         same.overlay_corner = self.overlay_corner;
         same.overlay_secs = self.overlay_secs;
         same.sound_on_save = self.sound_on_save;
+        same.clip_sound = self.clip_sound.clone();
+        same.limit_custom_sounds = self.limit_custom_sounds;
         same.close_to_tray = self.close_to_tray;
         same.start_minimized = self.start_minimized;
         same.launch_at_login = self.launch_at_login;

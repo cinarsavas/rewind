@@ -1,0 +1,16 @@
+name = "Pixel Material"
+author = "Rewind"
+# Inspired by Google Pixel's Material You colours: soft sage on a deep green-grey.
+
+[colors]
+nav = "#0d110e"
+panel = "#121713"
+card = "#1b221c"
+card_hi = "#232c25"
+stroke = "#2e3830"
+text = "#e9f1e9"
+muted = "#a0b0a2"
+faint = "#6b786d"
+accent = "#9ed8a6"
+danger = "#ffb4ab"
+warn = "#f2c66d"

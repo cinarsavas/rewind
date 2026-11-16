@@ -1,0 +1,20 @@
+name = "iOS 16 Ocean"
+author = "Rewind"
+# Inspired by the iOS 16 blue wallpaper: navy depth with a bright sky-blue accent.
+
+[colors]
+nav = "#06101f"
+panel = "#0a172b"
+card = "#11203a"
+card_hi = "#182b4b"
+stroke = "#22385e"
+text = "#ecf4ff"
+muted = "#93a9c9"
+faint = "#5f7596"
+accent = "#4fc3f7"
+danger = "#ff5d6c"
+warn = "#ffc65c"
+
+[layout]
+background_top = "#0f2a5c"
+background_bottom = "#07111f"

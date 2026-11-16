@@ -18,15 +18,13 @@ use libloading::Library;
 use rewind_core::config::VoiceConfig;
 use rewind_core::i18n::{default_phrase, Lang};
 use rewind_core::voice::{
-    decoy_words, grammar_json_with, grammar_phrase, parse_result, PhraseMatcher, Verdict, VoiceGate,
+    decoy_words, grammar_json_with, grammar_phrase, parse_result, split_phrases, PhraseMatcher,
+    SpeechCleaner, Verdict, VoiceGate,
 };
 use wasapi::{initialize_mta, DeviceEnumerator, Direction, SampleType, StreamMode, WaveFormat};
 
 const SAMPLE_RATE: usize = 16_000;
 const CHUNK_FRAMES: usize = 1_600; // 100 ms
-/// Lowest per-word confidence that still counts as the trigger. Small models are sure of a
-/// clearly spoken phrase (usually 0.9+) and unsure of the guesses that used to save clips.
-const MIN_WORD_CONF: f32 = 0.65;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VoiceStatus {
@@ -71,6 +69,11 @@ impl VoiceShared {
             .lock()
             .map(|s| s.clone())
             .unwrap_or(VoiceStatus::Stopped)
+    }
+    pub fn clear_heard(&self) {
+        if let Ok(mut h) = self.heard.lock() {
+            *h = None;
+        }
     }
     pub fn last_heard(&self) -> Option<Heard> {
         self.heard.lock().ok().and_then(|h| h.clone())
@@ -280,22 +283,35 @@ fn run(
     // over from the English model would otherwise silently never match.
     let lang = Lang::from_id(&cfg.language);
     let turkish = lang == Lang::Turkish;
-    let words = grammar_phrase(&cfg.phrase, turkish);
-    if words.is_empty() {
+    // Several phrases can be given, separated by commas. Phrases with a word the model
+    // doesn't know are dropped; only if none is left does the user get a warning.
+    let phrases: Vec<String> = split_phrases(&cfg.phrase)
+        .into_iter()
+        .map(|p| grammar_phrase(p, turkish))
+        .filter(|p| !p.is_empty())
+        .collect();
+    if phrases.is_empty() {
         unsafe { (vosk.model_free)(model) };
         return Err("the trigger phrase is empty".into());
     }
+    let mut usable: Vec<String> = phrases.clone();
     if let Some(find_word) = vosk.find_word {
+        let known = |word: &str| {
+            CString::new(word)
+                .map(|c| unsafe { find_word(model, c.as_ptr()) } >= 0)
+                .unwrap_or(false)
+        };
         let mut missing: Vec<String> = Vec::new();
-        for word in words.split(' ') {
-            let Ok(word_c) = CString::new(word) else {
-                continue;
-            };
-            if unsafe { find_word(model, word_c.as_ptr()) } < 0 {
-                missing.push(word.to_string());
+        usable.retain(|p| {
+            let unknown: Vec<&str> = p.split(' ').filter(|w| !known(*w)).collect();
+            for w in &unknown {
+                if !missing.iter().any(|m| m == *w) {
+                    missing.push(w.to_string());
+                }
             }
-        }
-        if !missing.is_empty() {
+            unknown.is_empty()
+        });
+        if usable.is_empty() {
             sh.set_status(VoiceStatus::Phrase(PhraseWarning {
                 lang,
                 missing,
@@ -308,7 +324,10 @@ fn run(
 
     // Decoys the model knows: the trigger's own words on their own plus everyday words, so
     // ordinary speech has somewhere to land other than the trigger.
-    let mut decoys: Vec<String> = words.split(' ').map(String::from).collect();
+    let mut decoys: Vec<String> = usable
+        .iter()
+        .flat_map(|p| p.split(' ').map(String::from))
+        .collect();
     decoys.extend(decoy_words(turkish).iter().map(|w| w.to_string()));
     if let Some(find_word) = vosk.find_word {
         decoys.retain(|w| {
@@ -320,8 +339,9 @@ fn run(
         // Can't check the vocabulary: an unknown word would make the grammar fail to load.
         decoys.clear();
     }
-    let grammar =
-        CString::new(grammar_json_with(&cfg.phrase, turkish, &decoys)).map_err(|_| "bad phrase")?;
+    let usable_phrase = usable.join(", ");
+    let grammar = CString::new(grammar_json_with(&usable_phrase, turkish, &decoys))
+        .map_err(|_| "bad phrase")?;
     let mut rec = unsafe { (vosk.rec_new_grm)(model, SAMPLE_RATE as f32, grammar.as_ptr()) };
     if rec.is_null() {
         // A model without grammar support still recognises free speech; the phrase matcher
@@ -335,7 +355,9 @@ fn run(
     if let Some(set_words) = vosk.set_words {
         unsafe { set_words(rec, 1) };
     }
-    let outcome = listen(&vosk, rec, cfg, device_id, sh, tx, ctx);
+    let mut listen_cfg = cfg.clone();
+    listen_cfg.phrase = usable_phrase;
+    let outcome = listen(&vosk, rec, &listen_cfg, device_id, sh, tx, ctx);
     unsafe {
         (vosk.rec_free)(rec);
         (vosk.model_free)(model);
@@ -391,7 +413,11 @@ fn listen(
     ctx.request_repaint();
 
     let mut gate = VoiceGate::new(SAMPLE_RATE as u32, cfg.sensitivity);
-    let mut matcher = PhraseMatcher::new(&cfg.phrase, 3_000);
+    let mut matcher = PhraseMatcher::new(&cfg.phrase, 3_000).with_slack(cfg.strictness.slack());
+    let min_conf = cfg.strictness.min_confidence();
+    // High-pass + automatic gain on what the recogniser hears (the gate still judges the raw
+    // level, so the sensitivity slider keeps working the same way).
+    let mut cleaner = SpeechCleaner::new();
     let started = Instant::now();
     let chunk_bytes = CHUNK_FRAMES * 2;
     let mut was_open = false;
@@ -419,7 +445,7 @@ fn listen(
                     let verdict = matcher.judge(
                         &r.text,
                         r.min_conf,
-                        MIN_WORD_CONF,
+                        min_conf,
                         started.elapsed().as_millis() as u64,
                     );
                     if verdict == Verdict::Match {
@@ -439,13 +465,15 @@ fn listen(
                     }
                 }
             };
-            if let Some(audio) = audio {
+            if let Some(mut audio) = audio {
+                cleaner.process(&mut audio);
                 let accepted = unsafe { (vosk.accept)(rec, audio.as_ptr(), audio.len() as c_int) };
                 if accepted == 1 {
                     check(unsafe { c_str((vosk.result)(rec)) });
                 }
             }
             if was_open && !gate.is_open() {
+                cleaner.reset_filter();
                 // Speech ended: take what's left of the utterance, then start clean.
                 if let Some(final_result) = vosk.final_result {
                     check(unsafe { c_str(final_result(rec)) });

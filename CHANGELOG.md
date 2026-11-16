@@ -2,6 +2,18 @@
 
 All notable changes are listed here. The section for a tag becomes that release's notes.
 
+## [0.3.4]
+
+### Added
+- **Your own clip-saved sounds.** Drag an .mp3 or .wav onto Rewind to add it, then pick it under Settings → Notifications → **Sound** (the first one you add is picked for you). Add-ons → **Custom sounds** lists them with Play, Use and Remove buttons and opens the sounds folder. Up to 5 sounds are kept unless you turn off **Limit to 5 sounds**. Files over 10 MB are refused; anything that won't play falls back to the Rewind chime.
+- **10 new themes** inspired by phone wallpapers and colour schemes: iOS 13 Dusk, iOS 14 Sorbet, iOS 15 Hello, iOS 16 Ocean, iOS 17 Sunset, iOS 18 Aurora, Titanium, Galaxy One UI, Pixel Material and Nothing Mono. They're optional downloads in Add-ons → Themes.
+- **Try a theme before installing it.** Every downloadable theme has a **Preview** button: it shows the theme right away without installing it, and the downloaded file is deleted as soon as it's loaded. Press **Install it** to keep it, or **End preview** (leaving the Add-ons page ends it too).
+- **Better Turkish voice clipping.** What the recogniser hears is now cleaned first (a high-pass filter removes rumble and fan noise, and automatic gain lifts quiet or distant mics), many more look-alike Turkish words were added so near-misses don't turn into clips, and you can set **Strictness** (Relaxed / Normal / Strict). You can also give several phrases separated by commas, for example `klip al, klibi al`.
+- **Voice test button.** The live mic meter and "Last heard" now appear only while a test is running: press **Test** next to the voice status, and it stays open for 20 seconds or until you press **Stop test**.
+
+### Fixed
+- **Hover previews now show up, and fast.** In 0.3.3 a finished preview was never picked up, so hovering just kept loading. Now, while Rewind is in front, the clips you can see are prepared in the background at idle priority, so a hover usually plays at once. A hover that isn't ready jumps the queue and uses every core, and the last 4 previews stay in memory. Nothing is prepared while you're in a game.
+
 ## [0.3.3]
 
 ### Added

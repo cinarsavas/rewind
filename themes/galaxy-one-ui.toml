@@ -1,0 +1,16 @@
+name = "Galaxy One UI"
+author = "Rewind"
+# Inspired by Samsung One UI: clean near-black with the One UI blue.
+
+[colors]
+nav = "#000000"
+panel = "#0a0a0c"
+card = "#151518"
+card_hi = "#1f1f24"
+stroke = "#2a2a30"
+text = "#f5f5f7"
+muted = "#9b9ba3"
+faint = "#66666e"
+accent = "#3e91ff"
+danger = "#ff5d6c"
+warn = "#ffc04d"

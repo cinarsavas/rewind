@@ -112,7 +112,12 @@ enum Msg {
 pub enum PackEvent {
     Installed(String),
     Failed(String, String),
+    /// A theme preview finished downloading and is ready to show (its display name).
+    Previewing(String),
 }
+
+/// Prefix for the id of a theme being previewed, so it can never clash with an installed one.
+pub const PREVIEW_PREFIX: &str = "preview:";
 
 pub struct PackManager {
     root: PathBuf,
@@ -122,6 +127,10 @@ pub struct PackManager {
     pub jobs: HashMap<String, Arc<Progress>>,
     pub themes: Vec<InstalledTheme>,
     pub effects: Vec<InstalledEffects>,
+    /// A theme shown without installing it. Its file is deleted as soon as it's loaded, so
+    /// nothing stays on disk; ending the preview forgets it entirely.
+    pub preview: Option<(InstalledTheme, ThemePack)>,
+    preview_pending: Option<ThemePack>,
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
 }
@@ -137,6 +146,8 @@ impl PackManager {
             jobs: HashMap::new(),
             themes: Vec::new(),
             effects: Vec::new(),
+            preview: None,
+            preview_pending: None,
             tx,
             rx,
         };
@@ -306,6 +317,66 @@ impl PackManager {
         let _ = fs::remove_dir_all(self.voice_model_dir(id));
     }
 
+    fn previews_dir(&self) -> PathBuf {
+        self.root.join(".theme-previews")
+    }
+
+    /// Download a theme just to look at it. It is applied without being installed, and the
+    /// downloaded file is removed again right after it has been read.
+    pub fn preview_theme(&mut self, pack: &ThemePack) {
+        let (dir, file, id) = (self.previews_dir(), pack.file.clone(), pack.id.clone());
+        self.preview_pending = Some(pack.clone());
+        self.spawn_job(&format!("preview-theme-{id}"), move |p| {
+            let _ = fs::create_dir_all(&dir);
+            let tmp = dir.join(format!("{id}.toml"));
+            download_verified(&file.url, &tmp, &file.sha256, &p)
+        });
+    }
+
+    /// Stop previewing and forget the theme.
+    pub fn end_preview(&mut self) {
+        self.preview = None;
+        self.preview_pending = None;
+        let _ = fs::remove_dir_all(self.previews_dir());
+    }
+
+    /// Turn a downloaded preview file into an in-memory theme and delete the file.
+    fn load_preview(&mut self, id: &str) -> Result<String, String> {
+        let path = self.previews_dir().join(format!("{id}.toml"));
+        let text = fs::read_to_string(&path).map_err(|e| e.to_string());
+        let _ = fs::remove_dir_all(self.previews_dir());
+        let file = ThemeFile::from_toml(&text?).map_err(|e| e.to_string())?;
+        let palette = file.to_palette().map_err(|e| e.to_string())?;
+        let pack = self
+            .preview_pending
+            .take()
+            .filter(|p| p.id == id)
+            .ok_or("the preview was cancelled")?;
+        let name = file.name.clone();
+        self.preview = Some((
+            InstalledTheme {
+                id: format!("{PREVIEW_PREFIX}{id}"),
+                name: file.name,
+                author: file.author,
+                palette,
+                layout: file.layout,
+                // Preview downloads are single files; a background image can't come along.
+                background_path: None,
+            },
+            pack,
+        ));
+        Ok(name)
+    }
+
+    fn find_theme(&self, id: &str) -> Option<&InstalledTheme> {
+        if let Some((t, _)) = &self.preview {
+            if t.id == id {
+                return Some(t);
+            }
+        }
+        self.themes.iter().find(|t| t.id == id)
+    }
+
     pub fn remove_theme(&mut self, id: &str) {
         let _ = fs::remove_file(self.themes_dir().join(format!("{id}.toml")));
         self.scan_themes();
@@ -432,28 +503,21 @@ impl PackManager {
 
     /// Palette for a theme id; falls back to the built-in default if it's gone or broken.
     pub fn palette_for(&self, id: &str) -> Palette {
-        self.themes
-            .iter()
-            .find(|t| t.id == id)
+        self.find_theme(id)
             .map(|t| t.palette)
             .unwrap_or_else(Palette::default_dark)
     }
 
     /// Layout overrides for a theme id, or the built-in layout.
     pub fn layout_for(&self, id: &str) -> ThemeLayout {
-        self.themes
-            .iter()
-            .find(|t| t.id == id)
+        self.find_theme(id)
             .map(|t| t.layout.clone())
             .unwrap_or_default()
     }
 
     /// Background image shipped with a theme, if any.
     pub fn background_for(&self, id: &str) -> Option<PathBuf> {
-        self.themes
-            .iter()
-            .find(|t| t.id == id)
-            .and_then(|t| t.background_path.clone())
+        self.find_theme(id).and_then(|t| t.background_path.clone())
     }
 
     pub fn poll(&mut self) -> Vec<PackEvent> {
@@ -472,6 +536,13 @@ impl PackManager {
                     self.jobs.remove(&key);
                     match result {
                         Ok(()) => {
+                            if let Some(id) = key.strip_prefix("preview-theme-") {
+                                match self.load_preview(id) {
+                                    Ok(name) => events.push(PackEvent::Previewing(name)),
+                                    Err(e) => events.push(PackEvent::Failed(key.clone(), e)),
+                                }
+                                continue;
+                            }
                             if key.starts_with("theme-") {
                                 self.scan_themes();
                             }

@@ -1,0 +1,20 @@
+name = "iOS 14 Sorbet"
+author = "Rewind"
+# Inspired by the iOS 14 shapes wallpaper: deep navy with soft coral.
+
+[colors]
+nav = "#0a0e1a"
+panel = "#0f1424"
+card = "#171d31"
+card_hi = "#20283f"
+stroke = "#2a3350"
+text = "#eef1fa"
+muted = "#98a2bf"
+faint = "#646e8c"
+accent = "#ff8a7a"
+danger = "#ff5d6c"
+warn = "#ffc65c"
+
+[layout]
+background_top = "#1a1530"
+background_bottom = "#0c1020"

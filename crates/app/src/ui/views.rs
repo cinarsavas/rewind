@@ -613,6 +613,7 @@ fn replay_page(app: &mut RewindApp, ui: &mut egui::Ui, ctx: &egui::Context) {
         permanent: app.cfg.delete_permanently,
         zoom: 1.0,
         preview: preview_exe.as_deref(),
+        prefetch: ui.ctx().input(|i| i.viewport().focused.unwrap_or(false)),
     };
     let mut action: Option<(usize, ClipAction)> = None;
     let mut any_preview = false;
@@ -719,6 +720,8 @@ struct RowOpts<'a> {
     zoom: f32,
     /// ffmpeg from the hover-preview add-on, when it's installed and switched on.
     preview: Option<&'a std::path::Path>,
+    /// Prepare previews of drawn rows in the background (only while Rewind is in front).
+    prefetch: bool,
 }
 
 /// One clip row. Borrows the row and the thumbnail cache instead of the whole app, so the
@@ -739,6 +742,7 @@ fn clip_row(
         permanent,
         zoom,
         preview,
+        prefetch,
     } = opts;
     let mut previewing = false;
     let mut action = None;
@@ -776,6 +780,11 @@ fn clip_row(
                         pal().deep,
                     );
                     paint_icon(ui.painter(), Icon::Play, r.center(), 18.0, pal().accent);
+                }
+                if let (Some(ffmpeg), true, false) =
+                    (preview, prefetch && want_thumb, thumb_resp.hovered())
+                {
+                    previews.prefetch(&clip.path, clip.modified, ffmpeg);
                 }
                 if let (Some(ffmpeg), true) = (preview, want_thumb && thumb_resp.hovered()) {
                     previewing = true;
@@ -992,6 +1001,7 @@ fn clips_page(app: &mut RewindApp, ui: &mut egui::Ui) {
         permanent: app.cfg.delete_permanently,
         zoom: app.cfg.clip_zoom,
         preview: preview_exe.as_deref(),
+        prefetch: ui.ctx().input(|i| i.viewport().focused.unwrap_or(false)),
     };
     let mut any_preview = false;
     let animate = animations_on() && !app.cfg.low_power_ui;
@@ -1513,7 +1523,7 @@ fn settings_page(app: &mut RewindApp, ui: &mut egui::Ui, _ctx: &egui::Context) {
             ui,
             "Play a sound when a clip is saved",
             "Also works in exclusive-fullscreen games, where the overlay can't draw.",
-            true,
+            false,
             |ui| {
                 if text_button(ui, None, "Preview", true).clicked() {
                     preview = true;
@@ -1521,10 +1531,33 @@ fn settings_page(app: &mut RewindApp, ui: &mut egui::Ui, _ctx: &egui::Context) {
                 toggle(ui, &mut d.sound_on_save);
             },
         );
+        let sounds = crate::sounds::list(&super::sounds_dir());
+        setting_row(
+            ui,
+            "Sound",
+            "Add your own .mp3 or .wav by dragging it onto Rewind (see Add-ons).",
+            true,
+            |ui| {
+                let current = if d.clip_sound.is_empty() || !sounds.contains(&d.clip_sound) {
+                    t("Rewind chime").to_string()
+                } else {
+                    d.clip_sound.clone()
+                };
+                egui::ComboBox::from_id_salt("clip-sound")
+                    .selected_text(current)
+                    .width(220.0)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut d.clip_sound, String::new(), t("Rewind chime"));
+                        for name in &sounds {
+                            ui.selectable_value(&mut d.clip_sound, name.clone(), name.as_str());
+                        }
+                    });
+            },
+        );
         if preview {
             app.preview_overlay();
             if app.draft.sound_on_save {
-                crate::platform::clip_saved_sound();
+                crate::sounds::play_clip_saved(&super::sounds_dir(), &app.draft.clip_sound);
             }
         }
     });
@@ -2317,7 +2350,7 @@ fn addons_page(app: &mut RewindApp, ui: &mut egui::Ui) {
         setting_row(
             ui,
             "Trigger phrase",
-            "Use words your language model knows, like \"clip that\" or \"klip al\".",
+            "Use words your language model knows, like \"clip that\" or \"klip al\". Separate several with commas: \"klip al, klibi al\".",
             false,
             |ui| {
                 ui.horizontal(|ui| {
@@ -2349,13 +2382,44 @@ fn addons_page(app: &mut RewindApp, ui: &mut egui::Ui) {
                 );
             },
         );
-        setting_row(ui, "Status", "", true, |ui| {
+        setting_row(
+            ui,
+            "Strictness",
+            "Relaxed misses less and allows a word or two around the phrase; Strict saves fewer clips by mistake.",
+            false,
+            |ui| {
+                let items: [(rewind_core::config::Strictness, &str); 3] = std::array::from_fn(|i| {
+                    let s = rewind_core::config::Strictness::ALL[i];
+                    (s, s.label())
+                });
+                segmented(ui, &mut app.draft.voice.strictness, &items);
+            },
+        );
+        // The live meter and "last heard" only run while a test is open: 20 seconds, or until
+        // it's closed. The rest of the time the page doesn't redraw for the voice at all.
+        let testing = app
+            .voice_test_until
+            .map(|t| std::time::Instant::now() < t)
+            .unwrap_or(false);
+        if !testing {
+            app.voice_test_until = None;
+        }
+        let can_test = app.voice_handle().is_some();
+        let mut toggle_test = false;
+        setting_row(ui, "Status", "", !testing, |ui| {
+            if can_test
+                && text_button(ui, None, if testing { "Stop test" } else { "Test" }, true).clicked()
+            {
+                toggle_test = true;
+            }
             match app
                 .voice_handle()
                 .map(|v| (v.shared.status(), v.shared.level()))
             {
                 Some((VoiceStatus::Listening, level)) => {
-                    progress_bar(ui, (level * 6.0).clamp(0.0, 1.0), 120.0);
+                    if testing {
+                        progress_bar(ui, (level * 6.0).clamp(0.0, 1.0), 120.0);
+                    }
                     status_text(ui, "Listening", pal().accent);
                 }
                 Some((VoiceStatus::Starting, _)) => status_text(ui, "Starting…", pal().muted),
@@ -2400,9 +2464,50 @@ fn addons_page(app: &mut RewindApp, ui: &mut egui::Ui) {
                 ),
             }
         });
+        if toggle_test {
+            app.voice_test_until = if testing {
+                None
+            } else {
+                // Start clean so an old result isn't mistaken for this test.
+                if let Some(v) = app.voice_handle() {
+                    v.shared.clear_heard();
+                }
+                Some(std::time::Instant::now() + std::time::Duration::from_secs(20))
+            };
+        }
         // Voice test: what the recogniser made of the last thing you said, and why it did
-        // or didn't save a clip. Updated only when you finish speaking.
-        if let Some(h) = app.voice_handle().and_then(|v| v.shared.last_heard()) {
+        // or didn't save a clip.
+        if testing {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(100));
+            let left = app
+                .voice_test_until
+                .map(|t| {
+                    t.saturating_duration_since(std::time::Instant::now())
+                        .as_secs()
+                        + 1
+                })
+                .unwrap_or(0);
+            match app.voice_handle().and_then(|v| v.shared.last_heard()) {
+                None => {
+                    ui.add_space(4.0);
+                    ui.label(muted(tf(
+                        "Say \"{phrase}\" to test it… (closes in {s} s)",
+                        &[("phrase", &app.cfg.voice.phrase), ("s", &left.to_string())],
+                    )));
+                }
+                Some(_) => {
+                    ui.label(muted(tf(
+                        "Test closes in {s} s",
+                        &[("s", &left.to_string())],
+                    )));
+                }
+            }
+        }
+        if let Some(h) = testing
+            .then(|| app.voice_handle().and_then(|v| v.shared.last_heard()))
+            .flatten()
+        {
             let (why, color) = match h.verdict {
                 Verdict::Match => ("Saved a clip", pal().accent),
                 Verdict::NotAlone => ("Ignored: say it on its own", pal().warn),
@@ -2420,6 +2525,70 @@ fn addons_page(app: &mut RewindApp, ui: &mut egui::Ui) {
     ui.label(muted("Tip: say the phrase on its own, with a short pause before and after; it doesn't count inside a longer sentence. Press Apply after changing the phrase or language."));
 
     // ---- Celebration effects
+    section_title(ui, "CUSTOM SOUNDS");
+    card(ui, |ui| {
+        let dir = super::sounds_dir();
+        let sounds = crate::sounds::list(&dir);
+        let limit = app.cfg.limit_custom_sounds;
+        let count = if limit {
+            tf(
+                "{n} of {max} · drag an .mp3 or .wav onto Rewind to add one",
+                &[
+                    ("n", &sounds.len().to_string()),
+                    ("max", &crate::sounds::LIMIT.to_string()),
+                ],
+            )
+        } else {
+            tf(
+                "{n} sounds · drag an .mp3 or .wav onto Rewind to add one",
+                &[("n", &sounds.len().to_string())],
+            )
+        };
+        setting_row(ui, "Clip-saved sounds", &count, false, |ui| {
+            if icon_button(ui, Icon::Folder, "Open sounds folder", pal().muted).clicked() {
+                let _ = std::fs::create_dir_all(&dir);
+                let _ = opener::open(&dir);
+            }
+        });
+        let mut remove: Option<String> = None;
+        for name in &sounds {
+            let active = app.cfg.clip_sound == *name;
+            setting_row(
+                ui,
+                name,
+                if active {
+                    "Plays when a clip is saved"
+                } else {
+                    ""
+                },
+                false,
+                |ui| {
+                    if icon_button(ui, Icon::Trash, "Remove", pal().danger).clicked() {
+                        remove = Some(name.clone());
+                    }
+                    if icon_button(ui, Icon::Play, "Play", pal().accent).clicked() {
+                        crate::sounds::play_clip_saved(&dir, name);
+                    }
+                    if !active && text_button(ui, None, "Use", true).clicked() {
+                        app.draft.clip_sound = name.clone();
+                    }
+                },
+            );
+        }
+        if let Some(name) = remove {
+            app.remove_sound(&name);
+        }
+        setting_row(
+            ui,
+            "Limit to 5 sounds",
+            "Turn off to keep as many as you like.",
+            true,
+            |ui| {
+                toggle(ui, &mut app.draft.limit_custom_sounds);
+            },
+        );
+    });
+
     section_title(ui, "HOVER PREVIEWS");
     card(ui, |ui| {
         let installed = app.packs.preview_ffmpeg().is_some();
@@ -2530,6 +2699,35 @@ fn addons_page(app: &mut RewindApp, ui: &mut egui::Ui) {
 
     // ---- Themes
     section_title(ui, "THEMES");
+    // While a theme is previewed it's on screen but not installed; it goes away when you
+    // leave this page or press End preview.
+    if let Some((t, _)) = app.packs.preview.clone() {
+        egui::Frame::new()
+            .fill(pal().accent_bg)
+            .stroke(Stroke::new(1.0, pal().accent_dim))
+            .corner_radius(CornerRadius::same(12))
+            .inner_margin(Margin::same(12))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.label(bold(tf("Previewing {name}", &[("name", &t.name)])));
+                        ui.label(muted(
+                            "Not installed. It disappears when you leave this page.",
+                        ));
+                    });
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if text_button(ui, None, "End preview", true).clicked() {
+                            app.end_theme_preview();
+                        }
+                        if accent_pill(ui, "Install it", true).clicked() {
+                            app.keep_theme_preview();
+                        }
+                    });
+                });
+            });
+        ui.add_space(6.0);
+    }
     card(ui, |ui| {
         let current = app.draft.theme.clone();
         // Built-in default
@@ -2617,6 +2815,26 @@ fn addons_page(app: &mut RewindApp, ui: &mut egui::Ui) {
                         |a| a.packs.install_theme(&t),
                         |_| {},
                     );
+                    // Try it on without installing anything.
+                    let previewing = app
+                        .packs
+                        .preview
+                        .as_ref()
+                        .map(|(_, p)| p.id == t.id)
+                        .unwrap_or(false);
+                    let loading = app
+                        .packs
+                        .jobs
+                        .contains_key(&format!("preview-theme-{}", t.id));
+                    if previewing {
+                        status_text(ui, "Previewing", pal().accent);
+                    } else if loading {
+                        status_text(ui, "Loading…", pal().muted);
+                    } else if !app.packs.jobs.contains_key(&key)
+                        && text_button(ui, None, "Preview", true).clicked()
+                    {
+                        app.packs.preview_theme(&t);
+                    }
                 });
             });
         }
