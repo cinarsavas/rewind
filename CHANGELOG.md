@@ -2,6 +2,11 @@
 
 All notable changes are listed here. The section for a tag becomes that release's notes.
 
+## [0.3.6]
+
+### Fixed
+- **Clips page layout.** Cards were laid out sideways (buttons next to the thumbnail, no name, the last column cut off). Each card now stacks the thumbnail, name, details and buttons top to bottom and fits the window.
+
 ## [0.3.5]
 
 ### Added

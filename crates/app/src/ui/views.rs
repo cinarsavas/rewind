@@ -1139,224 +1139,241 @@ fn clip_card(
     if reveal < 1.0 {
         ui.multiply_opacity(reveal.max(0.0));
     }
-    let inner = width - 20.0;
+    // 10 px margin and 1 px border on each side.
+    let inner = (width - 22.0).max(60.0);
     let resp = ui
-        .allocate_ui(vec2(width, 0.0), |ui| {
-            egui::Frame::new()
-                .fill(pal().card)
-                .stroke(Stroke::new(1.0, pal().stroke))
-                .corner_radius(CornerRadius::same(14))
-                .inner_margin(Margin::same(10))
-                .show(ui, |ui| {
-                    ui.set_width(inner);
-                    ui.spacing_mut().item_spacing.y = 6.0;
+        .allocate_ui_with_layout(
+            vec2(width, 0.0),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                ui.set_width(width);
+                egui::Frame::new()
+                    .fill(pal().card)
+                    .stroke(Stroke::new(1.0, pal().stroke))
+                    .corner_radius(CornerRadius::same(14))
+                    .inner_margin(Margin::same(10))
+                    .show(ui, |ui| {
+                        ui.set_width(inner);
+                        ui.set_max_width(inner);
+                        ui.spacing_mut().item_spacing.y = 6.0;
 
-                    // ---- thumbnail (click to play, hover to preview)
-                    let size = if opts.want_thumb {
-                        vec2(inner, (inner * 9.0 / 16.0).round())
-                    } else {
-                        vec2(inner, 64.0)
-                    };
-                    let (r, thumb) = ui.allocate_exact_size(size, Sense::click());
-                    let tex = if opts.want_thumb {
-                        thumbs.get(ui.ctx(), &clip.path, clip.modified)
-                    } else {
-                        None
-                    };
-                    match &tex {
-                        Some(tex) => {
-                            egui::Image::new((tex.id(), size))
-                                .corner_radius(CornerRadius::same(10))
-                                .paint_at(ui, r);
-                        }
-                        None => {
-                            ui.painter()
-                                .rect_filled(r, CornerRadius::same(10), pal().deep);
-                            paint_icon(ui.painter(), Icon::Play, r.center(), 22.0, pal().accent);
-                        }
-                    }
-                    if let (Some(ffmpeg), true, false) = (
-                        opts.preview,
-                        opts.prefetch && opts.want_thumb,
-                        thumb.hovered(),
-                    ) {
-                        previews.prefetch(
-                            &clip.path,
-                            clip.modified,
-                            ffmpeg,
-                            size.x * ui.ctx().pixels_per_point(),
-                        );
-                    }
-                    if let (Some(ffmpeg), true) = (opts.preview, opts.want_thumb && thumb.hovered())
-                    {
-                        previewing = true;
-                        let ctx = ui.ctx().clone();
-                        match previews.hover(
-                            &ctx,
-                            &clip.path,
-                            clip.modified,
-                            ffmpeg,
-                            size.x * ctx.pixels_per_point(),
-                        ) {
-                            crate::preview::Frame::Ready(tex, progress) => {
+                        // ---- thumbnail (click to play, hover to preview)
+                        let size = if opts.want_thumb {
+                            vec2(inner, (inner * 9.0 / 16.0).round())
+                        } else {
+                            vec2(inner, 64.0)
+                        };
+                        let (r, thumb) = ui.allocate_exact_size(size, Sense::click());
+                        let tex = if opts.want_thumb {
+                            thumbs.get(ui.ctx(), &clip.path, clip.modified)
+                        } else {
+                            None
+                        };
+                        match &tex {
+                            Some(tex) => {
                                 egui::Image::new((tex.id(), size))
                                     .corner_radius(CornerRadius::same(10))
                                     .paint_at(ui, r);
-                                let bar = egui::Rect::from_min_max(
-                                    pos2(r.left() + 8.0, r.bottom() - 7.0),
-                                    pos2(r.right() - 8.0, r.bottom() - 4.0),
-                                );
-                                ui.painter().rect_filled(
-                                    bar,
-                                    CornerRadius::same(2),
-                                    Color32::from_black_alpha(120),
-                                );
-                                ui.painter().rect_filled(
-                                    egui::Rect::from_min_max(
-                                        bar.min,
-                                        pos2(bar.left() + bar.width() * progress, bar.bottom()),
-                                    ),
-                                    CornerRadius::same(2),
+                            }
+                            None => {
+                                ui.painter()
+                                    .rect_filled(r, CornerRadius::same(10), pal().deep);
+                                paint_icon(
+                                    ui.painter(),
+                                    Icon::Play,
+                                    r.center(),
+                                    22.0,
                                     pal().accent,
                                 );
                             }
-                            crate::preview::Frame::Loading => {
-                                let tm = ui.input(|i| i.time) as f32;
-                                for k in 0..3 {
-                                    let a =
-                                        ((tm * 3.0 - k as f32 * 0.6).sin() * 0.5 + 0.5) * 0.8 + 0.2;
-                                    ui.painter().circle_filled(
-                                        pos2(
-                                            r.center().x + (k as f32 - 1.0) * 10.0,
-                                            r.bottom() - 14.0,
+                        }
+                        if let (Some(ffmpeg), true, false) = (
+                            opts.preview,
+                            opts.prefetch && opts.want_thumb,
+                            thumb.hovered(),
+                        ) {
+                            previews.prefetch(
+                                &clip.path,
+                                clip.modified,
+                                ffmpeg,
+                                size.x * ui.ctx().pixels_per_point(),
+                            );
+                        }
+                        if let (Some(ffmpeg), true) =
+                            (opts.preview, opts.want_thumb && thumb.hovered())
+                        {
+                            previewing = true;
+                            let ctx = ui.ctx().clone();
+                            match previews.hover(
+                                &ctx,
+                                &clip.path,
+                                clip.modified,
+                                ffmpeg,
+                                size.x * ctx.pixels_per_point(),
+                            ) {
+                                crate::preview::Frame::Ready(tex, progress) => {
+                                    egui::Image::new((tex.id(), size))
+                                        .corner_radius(CornerRadius::same(10))
+                                        .paint_at(ui, r);
+                                    let bar = egui::Rect::from_min_max(
+                                        pos2(r.left() + 8.0, r.bottom() - 7.0),
+                                        pos2(r.right() - 8.0, r.bottom() - 4.0),
+                                    );
+                                    ui.painter().rect_filled(
+                                        bar,
+                                        CornerRadius::same(2),
+                                        Color32::from_black_alpha(120),
+                                    );
+                                    ui.painter().rect_filled(
+                                        egui::Rect::from_min_max(
+                                            bar.min,
+                                            pos2(bar.left() + bar.width() * progress, bar.bottom()),
                                         ),
-                                        3.0,
-                                        pal().accent.gamma_multiply(a),
+                                        CornerRadius::same(2),
+                                        pal().accent,
                                     );
                                 }
+                                crate::preview::Frame::Loading => {
+                                    let tm = ui.input(|i| i.time) as f32;
+                                    for k in 0..3 {
+                                        let a = ((tm * 3.0 - k as f32 * 0.6).sin() * 0.5 + 0.5)
+                                            * 0.8
+                                            + 0.2;
+                                        ui.painter().circle_filled(
+                                            pos2(
+                                                r.center().x + (k as f32 - 1.0) * 10.0,
+                                                r.bottom() - 14.0,
+                                            ),
+                                            3.0,
+                                            pal().accent.gamma_multiply(a),
+                                        );
+                                    }
+                                }
+                                crate::preview::Frame::Failed(_) => {}
                             }
-                            crate::preview::Frame::Failed(_) => {}
+                        } else if thumb.hovered() && tex.is_some() {
+                            // A soft play badge so it's clear the picture opens the clip.
+                            ui.painter().circle_filled(
+                                r.center(),
+                                20.0,
+                                Color32::from_black_alpha(140),
+                            );
+                            paint_icon(ui.painter(), Icon::Play, r.center(), 18.0, Color32::WHITE);
                         }
-                    } else if thumb.hovered() && tex.is_some() {
-                        // A soft play badge so it's clear the picture opens the clip.
-                        ui.painter().circle_filled(
-                            r.center(),
-                            20.0,
-                            Color32::from_black_alpha(140),
-                        );
-                        paint_icon(ui.painter(), Icon::Play, r.center(), 18.0, Color32::WHITE);
-                    }
-                    if thumb.clicked() {
-                        action = Some(ClipAction::Play);
-                    }
-
-                    // ---- star, always visible on starred clips, on hover otherwise
-                    let star_rect = egui::Rect::from_center_size(
-                        pos2(r.left() + 20.0, r.top() + 20.0),
-                        vec2(30.0, 30.0),
-                    );
-                    let star = ui.interact(star_rect, thumb.id.with("star"), Sense::click());
-                    if favorite || thumb.hovered() || star.hovered() {
-                        ui.painter().circle_filled(
-                            star_rect.center(),
-                            14.0,
-                            Color32::from_black_alpha(if star.hovered() { 170 } else { 120 }),
-                        );
-                        paint_icon(
-                            ui.painter(),
-                            if favorite {
-                                Icon::StarFilled
-                            } else {
-                                Icon::Star
-                            },
-                            star_rect.center(),
-                            16.0,
-                            if favorite { pal().warn } else { Color32::WHITE },
-                        );
-                    }
-                    let star = star.on_hover_text(t(if favorite {
-                        "Unstar"
-                    } else {
-                        "Star (never auto-deleted)"
-                    }));
-                    if star.clicked() {
-                        action = Some(ClipAction::Favorite);
-                    }
-
-                    // ---- name and details, each on their own full-width line
-                    ui.add(egui::Label::new(bold(&clip.name).size(14.0)).truncate())
-                        .on_hover_text(&clip.name);
-                    ui.add(egui::Label::new(muted(meta)).truncate());
-
-                    // ---- actions: the common ones as icons, the rest in a menu
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 2.0;
-                        if icon_button(ui, Icon::Play, "Play", pal().accent).clicked() {
+                        if thumb.clicked() {
                             action = Some(ClipAction::Play);
                         }
-                        if icon_button(
-                            ui,
-                            Icon::Copy,
-                            "Copy the clip (paste into Discord, WhatsApp…)",
-                            pal().muted,
-                        )
-                        .clicked()
-                        {
-                            action = Some(ClipAction::Share);
-                        }
-                        if icon_button(ui, Icon::Folder, "Show in folder", pal().muted).clicked() {
-                            action = Some(ClipAction::Reveal);
-                        }
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            let tip = if opts.permanent {
-                                "Delete permanently"
-                            } else {
-                                "Move to Recycle Bin"
-                            };
-                            if icon_button(ui, Icon::Trash, tip, pal().danger).clicked() {
-                                action = Some(ClipAction::Delete);
-                            }
-                            let more = icon_button(ui, Icon::More, "More", pal().muted);
-                            egui::Popup::menu(&more).show(|ui| {
-                                ui.set_min_width(210.0);
-                                if ui.button(t("Rename")).clicked() {
-                                    action = Some(ClipAction::Rename);
-                                }
-                                let trim =
-                                    ui.add_enabled(opts.can_trim, egui::Button::new(t("Trim")));
-                                let trim = if opts.can_trim {
-                                    trim
+
+                        // ---- star, always visible on starred clips, on hover otherwise
+                        let star_rect = egui::Rect::from_center_size(
+                            pos2(r.left() + 20.0, r.top() + 20.0),
+                            vec2(30.0, 30.0),
+                        );
+                        let star = ui.interact(star_rect, thumb.id.with("star"), Sense::click());
+                        if favorite || thumb.hovered() || star.hovered() {
+                            ui.painter().circle_filled(
+                                star_rect.center(),
+                                14.0,
+                                Color32::from_black_alpha(if star.hovered() { 170 } else { 120 }),
+                            );
+                            paint_icon(
+                                ui.painter(),
+                                if favorite {
+                                    Icon::StarFilled
                                 } else {
-                                    trim.on_disabled_hover_text(t(
-                                        "Needs ffmpeg next to Rewind.exe or on PATH",
-                                    ))
+                                    Icon::Star
+                                },
+                                star_rect.center(),
+                                16.0,
+                                if favorite { pal().warn } else { Color32::WHITE },
+                            );
+                        }
+                        let star = star.on_hover_text(t(if favorite {
+                            "Unstar"
+                        } else {
+                            "Star (never auto-deleted)"
+                        }));
+                        if star.clicked() {
+                            action = Some(ClipAction::Favorite);
+                        }
+
+                        // ---- name and details, each on their own full-width line
+                        ui.add(egui::Label::new(bold(&clip.name).size(14.0)).truncate())
+                            .on_hover_text(&clip.name);
+                        ui.add(egui::Label::new(muted(meta)).truncate());
+
+                        // ---- actions: the common ones as icons, the rest in a menu
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 2.0;
+                            if icon_button(ui, Icon::Play, "Play", pal().accent).clicked() {
+                                action = Some(ClipAction::Play);
+                            }
+                            if icon_button(
+                                ui,
+                                Icon::Copy,
+                                "Copy the clip (paste into Discord, WhatsApp…)",
+                                pal().muted,
+                            )
+                            .clicked()
+                            {
+                                action = Some(ClipAction::Share);
+                            }
+                            if icon_button(ui, Icon::Folder, "Show in folder", pal().muted)
+                                .clicked()
+                            {
+                                action = Some(ClipAction::Reveal);
+                            }
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                let tip = if opts.permanent {
+                                    "Delete permanently"
+                                } else {
+                                    "Move to Recycle Bin"
                                 };
-                                if trim.clicked() {
-                                    action = Some(ClipAction::Trim);
+                                if icon_button(ui, Icon::Trash, tip, pal().danger).clicked() {
+                                    action = Some(ClipAction::Delete);
                                 }
-                                let small = ui.add_enabled(
-                                    opts.can_trim && !sharing,
-                                    egui::Button::new(if sharing {
-                                        t("Making a smaller copy…")
+                                let more = icon_button(ui, Icon::More, "More", pal().muted);
+                                egui::Popup::menu(&more).show(|ui| {
+                                    ui.set_min_width(210.0);
+                                    if ui.button(t("Rename")).clicked() {
+                                        action = Some(ClipAction::Rename);
+                                    }
+                                    let trim =
+                                        ui.add_enabled(opts.can_trim, egui::Button::new(t("Trim")));
+                                    let trim = if opts.can_trim {
+                                        trim
                                     } else {
-                                        t("Copy for Discord (under 10 MB)")
-                                    }),
-                                );
-                                if small.clicked() {
-                                    action = Some(ClipAction::ShareSmall);
-                                }
-                                if ui
-                                    .button(t(if favorite { "Unstar" } else { "Star" }))
-                                    .clicked()
-                                {
-                                    action = Some(ClipAction::Favorite);
-                                }
+                                        trim.on_disabled_hover_text(t(
+                                            "Needs ffmpeg next to Rewind.exe or on PATH",
+                                        ))
+                                    };
+                                    if trim.clicked() {
+                                        action = Some(ClipAction::Trim);
+                                    }
+                                    let small = ui.add_enabled(
+                                        opts.can_trim && !sharing,
+                                        egui::Button::new(if sharing {
+                                            t("Making a smaller copy…")
+                                        } else {
+                                            t("Copy for Discord (under 10 MB)")
+                                        }),
+                                    );
+                                    if small.clicked() {
+                                        action = Some(ClipAction::ShareSmall);
+                                    }
+                                    if ui
+                                        .button(t(if favorite { "Unstar" } else { "Star" }))
+                                        .clicked()
+                                    {
+                                        action = Some(ClipAction::Favorite);
+                                    }
+                                });
                             });
                         });
-                    });
-                })
-                .response
-        })
+                    })
+                    .response
+            },
+        )
         .inner;
     if reveal < 1.0 {
         ui.set_opacity(prev_opacity);
