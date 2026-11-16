@@ -41,6 +41,11 @@ MinVersion=10.0.17763
 ; Wait for / close a running Rewind (matches the app's single-instance mutex).
 AppMutex=RewindInstantReplaySingleInstance
 CloseApplications=yes
+; Only Rewind's own programs are ever closed. Games and browsers that Rewind captured can
+; keep one of its DLLs (the capture hook) loaded; without this filter Setup offered to close
+; them (and an in-app update closed them silently). Such DLLs are moved aside instead, see
+; MoveAside below.
+CloseApplicationsFilter=*.exe
 RestartApplications=no
 
 [Languages]
@@ -52,7 +57,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Name: "startup"; Description: "Start Rewind hidden in the tray when I sign in"; GroupDescription: "Startup:"; Flags: unchecked
 
 [Files]
-Source: "..\dist\stage\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
+Source: "..\dist\stage\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion; BeforeInstall: MoveAside
 
 [Icons]
 Name: "{autoprograms}\Rewind"; Filename: "{app}\{#MyAppExe}"
@@ -76,6 +81,57 @@ begin
   for I := 1 to ParamCount do
     if CompareText(ParamStr(I), '/RELAUNCH') = 0 then
       Result := True;
+end;
+
+// A file another program still has loaded (a game holding the capture hook DLL) can't be
+// overwritten, but Windows does allow renaming it. Rename it out of the way so the new copy
+// can be written; the program keeps using the old one until it closes, and the leftover is
+// removed by the next install. Nothing is closed and no restart is needed.
+procedure MoveAside;
+var
+  Target, Old: String;
+  N: Integer;
+begin
+  Target := ExpandConstant(CurrentFileName);
+  if not FileExists(Target) then
+    Exit;
+  if DeleteFile(Target) then
+    Exit;
+  N := 0;
+  repeat
+    N := N + 1;
+    Old := Target + '.old' + IntToStr(N);
+  until (not FileExists(Old)) or (N > 50);
+  if FileExists(Old) then
+    DeleteFile(Old);
+  RenameFile(Target, Old);
+end;
+
+// Remove files earlier installs moved aside (only those no program still holds).
+procedure CleanMovedAside(const Dir: String);
+var
+  F: TFindRec;
+begin
+  if FindFirst(Dir + '\*', F) then
+  try
+    repeat
+      if (F.Name <> '.') and (F.Name <> '..') then
+      begin
+        if (F.Attributes and FILE_ATTRIBUTE_DIRECTORY) <> 0 then
+          CleanMovedAside(Dir + '\' + F.Name)
+        else if (Pos('.dll.old', Lowercase(F.Name)) > 0) or (Pos('.exe.old', Lowercase(F.Name)) > 0) then
+          DeleteFile(Dir + '\' + F.Name);
+      end;
+    until not FindNext(F);
+  finally
+    FindClose(F);
+  end;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+    CleanMovedAside(ExpandConstant('{app}'));
 end;
 
 // The app can also add its own "start with Windows" entry from Settings; remove it on uninstall,

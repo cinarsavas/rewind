@@ -2,6 +2,20 @@
 
 All notable changes are listed here. The section for a tag becomes that release's notes.
 
+## [0.3.7]
+
+### Changed
+- **Hover previews start almost instantly.** Frames are streamed: the preview starts playing as soon as the first frame is ready (about a tenth of a second) instead of after the whole 20 seconds had been processed. It's also smoother (12 frames a second), skims faster, and a clip you skim past is finished in the background so it's instant next time. Background preparation that a hover interrupted is picked up again instead of being dropped.
+- **Trimmed clips sit right next to the clip they came from**, newest trim first, instead of jumping to the top of the list.
+- **Clips page spacing.** The grid now uses the whole window and picks the number of columns closest to the size you chose, so there's no more single giant card with empty space beside it, and nothing is cut off at the edge.
+- "Celebration effects" are now called **Toggle effects**.
+- **New: Extra animations** (Settings → Interface, on by default, off in Low-end): thumbnails zoom gently on hover, starring a clip pops, and a clip you just saved glows for a moment. Turns off on its own with Smooth animations or Low-power mode.
+
+### Fixed
+- **Updating no longer closes your games or browser.** Games and browsers that Rewind captured keep a Rewind file (the capture hook) loaded; the installer offered to close them, and an update from inside the app closed them without asking. Now only Rewind itself is closed; a file that's still in use is set aside and cleaned up next time.
+- Hover previews used an option ffmpeg doesn't accept (`-skip_frame nonref`), which could stop previews from appearing at all.
+- Picking another theme while one is being previewed now ends the preview and shows your choice right away.
+
 ## [0.3.6]
 
 ### Fixed

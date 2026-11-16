@@ -63,12 +63,73 @@ pub fn scan(dir: &Path) -> Vec<Clip> {
             .unwrap_or_default();
         push_dir(&sub, &group, &mut clips, None);
     }
+    sort_clips(&mut clips);
+    clips
+}
+
+/// Name of the clip a trim was made from: `X-trim.mp4`, `X-trim (2).mp4` and
+/// `X-trim-trim.mp4` all belong to `X`. Lower-cased, without the extension.
+fn trim_family(name: &str) -> (String, bool) {
+    let stem = match name.rfind('.') {
+        Some(i) => &name[..i],
+        None => name,
+    };
+    let mut base = stem.to_lowercase();
+    let mut trimmed = false;
+    loop {
+        // A " (n)" suffix added to avoid overwriting a file.
+        if let Some(open) = base.rfind(" (") {
+            let inner = &base[open + 2..];
+            if inner.ends_with(')')
+                && inner[..inner.len() - 1].chars().all(|c| c.is_ascii_digit())
+                && inner.len() > 1
+                && base[..open].ends_with("-trim")
+            {
+                base.truncate(open);
+            }
+        }
+        match base.strip_suffix("-trim") {
+            Some(b) if !b.is_empty() => {
+                base = b.to_string();
+                trimmed = true;
+            }
+            _ => break,
+        }
+    }
+    (base, trimmed)
+}
+
+/// Newest first, except that trimmed copies sit right after the clip they were cut from
+/// (newest trim first), even when the trim was made much later.
+pub fn sort_clips(clips: &mut [Clip]) {
+    use std::collections::HashMap;
+    let family = |c: &Clip| {
+        let (base, trimmed) = trim_family(&c.name);
+        ((c.group.to_lowercase(), base), trimmed)
+    };
+    // A family is placed by its original clip's time, or by its newest trim when the
+    // original is gone.
+    let mut placed: HashMap<(String, String), (bool, SystemTime)> = HashMap::new();
+    for c in clips.iter() {
+        let (key, trimmed) = family(c);
+        let entry = placed.entry(key).or_insert((trimmed, c.modified));
+        if !trimmed {
+            *entry = (false, c.modified);
+        } else if entry.0 && c.modified > entry.1 {
+            entry.1 = c.modified;
+        }
+    }
     clips.sort_by(|a, b| {
-        b.modified
-            .cmp(&a.modified)
+        let (ka, ta) = family(a);
+        let (kb, tb) = family(b);
+        let pa = placed[&ka].1;
+        let pb = placed[&kb].1;
+        pb.cmp(&pa)
+            .then_with(|| ka.cmp(&kb))
+            .then_with(|| ta.cmp(&tb))
+            .then_with(|| b.modified.cmp(&a.modified))
             .then_with(|| a.name.cmp(&b.name))
     });
-    clips
 }
 
 /// Path of a clip relative to the clips folder, with forward slashes ("Game/clip.mp4").
@@ -176,6 +237,45 @@ pub fn unique_path(dir: &Path, stem: &str, ext: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trims_sit_next_to_their_original() {
+        let t = |s| SystemTime::UNIX_EPOCH + Duration::from_secs(s);
+        let clip = |n: &str, secs| Clip {
+            path: PathBuf::from(n),
+            name: n.into(),
+            group: String::new(),
+            size_bytes: 1,
+            modified: t(secs),
+        };
+        let mut clips = vec![
+            clip("A.mp4", 100),
+            clip("B.mp4", 200),
+            clip("C.mp4", 300),
+            clip("A-trim.mp4", 900),
+            clip("A-trim (2).mp4", 950),
+            clip("A-trim-trim.mp4", 960),
+            clip("Gone-trim.mp4", 250),
+        ];
+        sort_clips(&mut clips);
+        let names: Vec<_> = clips.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "C.mp4",
+                "Gone-trim.mp4",
+                "B.mp4",
+                "A.mp4",
+                "A-trim-trim.mp4",
+                "A-trim (2).mp4",
+                "A-trim.mp4"
+            ]
+        );
+        assert_eq!(
+            trim_family("My Clip (2).mp4"),
+            ("my clip (2)".into(), false)
+        );
+    }
 
     #[test]
     fn storage_limit_keeps_favourites_and_newest() {

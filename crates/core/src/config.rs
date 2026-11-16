@@ -286,7 +286,7 @@ impl EffectStyle {
     }
     pub fn blurb(self) -> &'static str {
         match self {
-            EffectStyle::None => "No celebration.",
+            EffectStyle::None => "No effect.",
             EffectStyle::Shine => "A soft light sweep across the switch.",
             EffectStyle::Sparkle => "A burst of tiny stars.",
             EffectStyle::Creeper => "A pixel creeper goes boom.",
@@ -442,7 +442,10 @@ pub struct Config {
     pub animations: bool,
     /// Eased mouse-wheel scrolling. Separate from animations so it can be tuned on its own.
     pub smooth_scroll: bool,
-    /// Celebration played when a switch is turned on.
+    /// Extra motion on top of the smooth animations: thumbnails that zoom on hover, a
+    /// pop when starring a clip, a glow on a just-saved clip. Needs `animations`.
+    pub extra_motion: bool,
+    /// Toggle effect played when a switch is turned on.
     pub effects: EffectStyle,
     /// Minimal-power UI: no pulsing, slow refresh. Implied by the Low-end preset.
     pub low_power_ui: bool,
@@ -508,6 +511,7 @@ impl Default for Config {
             launch_at_login: false,
             animations: true,
             smooth_scroll: true,
+            extra_motion: true,
             effects: EffectStyle::None,
             low_power_ui: false,
             thumbnails: true,
@@ -590,6 +594,7 @@ impl Config {
                 self.audio.bitrate_kbps = 96;
                 self.animations = false;
                 self.smooth_scroll = false;
+                self.extra_motion = false;
                 self.effects = EffectStyle::None;
                 self.low_power_ui = true;
                 self.thumbnails = false;
@@ -604,6 +609,7 @@ impl Config {
                 self.audio.bitrate_kbps = 160;
                 self.animations = true;
                 self.smooth_scroll = true;
+                self.extra_motion = true;
                 self.effects = EffectStyle::None;
                 self.low_power_ui = false;
                 self.thumbnails = true;
@@ -618,6 +624,7 @@ impl Config {
                 self.audio.bitrate_kbps = 192;
                 self.animations = true;
                 self.smooth_scroll = true;
+                self.extra_motion = true;
                 self.effects = EffectStyle::None;
                 self.low_power_ui = false;
                 self.thumbnails = true;
@@ -646,6 +653,7 @@ impl Config {
         same.launch_at_login = self.launch_at_login;
         same.animations = self.animations;
         same.smooth_scroll = self.smooth_scroll;
+        same.extra_motion = self.extra_motion;
         same.effects = self.effects;
         same.low_power_ui = self.low_power_ui;
         same.thumbnails = self.thumbnails;

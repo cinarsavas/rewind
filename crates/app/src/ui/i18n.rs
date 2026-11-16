@@ -114,7 +114,7 @@ pub fn t(s: &str) -> &str {
         "Comet" => "Kuyruklu yıldız",
         "Bloom" => "Çiçek açımı",
         "Bolt" => "Şimşek",
-        "No celebration." => "Kutlama yok.",
+        "No effect." => "Efekt yok.",
         "A soft light sweep across the switch." => "Düğmenin üzerinden yumuşak bir ışık geçişi.",
         "A burst of tiny stars." => "Küçük yıldızlardan bir patlama.",
         "A pixel creeper goes boom." => "Piksel bir creeper patlar.",
@@ -304,14 +304,18 @@ pub fn t(s: &str) -> &str {
             "İsteğe bağlı ekstralar. Buradakiler varsayılan olarak kurulu değildir, böylece Rewind küçük kalır."
         }
         "THEMES" => "TEMALAR",
-        "CELEBRATION EFFECTS" => "KUTLAMA EFEKTLERİ",
+        "TOGGLE EFFECTS" => "AÇMA ANİMASYONLARI",
+        "Extra animations" => "Ek animasyonlar",
+        "Thumbnails zoom on hover, starring pops, a new clip glows for a moment. Needs smooth animations." => {
+            "Küçük resimler üzerine gelince yakınlaşır, yıldızlama hareketlenir, yeni klip bir an parlar. Akıcı animasyonlar açık olmalı."
+        }
         "Download effects in Add-ons first." => "Önce Eklentiler'den efekt indir.",
-        "Download a celebration pack from Add-ons to turn these on." => {
-            "Bunları açmak için Eklentiler'den bir kutlama paketi indir."
+        "Download the toggle effects from Add-ons to turn these on." => {
+            "Bunları açmak için Eklentiler'den açma animasyonlarını indir."
         }
         "Open Add-ons" => "Eklentileri aç",
         "No effect packs are available right now." => "Şu anda kullanılabilir efekt paketi yok.",
-        "Download to unlock these celebrations." => "Bu kutlamaların kilidini açmak için indir.",
+        "Download to unlock these toggle effects." => "Bu açma animasyonlarını açmak için indir.",
         "Mint (default)" => "Mint (varsayılan)",
         "Make your own: drop a theme .toml file into the themes folder, or start from the example." => {
             "Kendin yap: tema klasörüne bir .toml dosyası bırak veya örnekten başla."

@@ -278,6 +278,7 @@ impl RewindApp {
         i18n::set_lang(cfg.language);
         theme::install_fonts(&cc.egui_ctx);
         theme::set_animations(&cc.egui_ctx, cfg.animations);
+        theme::set_extra_motion(cfg.extra_motion && !cfg.low_power_ui);
         theme::set_palette(&packs.palette_for(&cfg.theme));
         theme::set_layout(theme::resolve_layout(
             &packs.layout_for(&cfg.theme),
@@ -1655,6 +1656,7 @@ impl eframe::App for RewindApp {
         if theme::animations_on() != self.draft.animations {
             theme::set_animations(ctx, self.draft.animations);
         }
+        theme::set_extra_motion(self.draft.extra_motion && !self.draft.low_power_ui);
         if theme::tick_tween() {
             theme::apply_visuals(ctx);
         }

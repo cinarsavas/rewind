@@ -160,7 +160,7 @@ def main() -> int:
         f"styles = [{styles}]\n",
         encoding="utf-8",
     )
-    lines += ["[[effects]]", 'id = "basic"', 'name = "Celebration effects"', 'author = "Rewind"',
+    lines += ["[[effects]]", 'id = "basic"', 'name = "Toggle effects"', 'author = "Rewind"',
               f"url = {toml_str(f'{base}/{effects_file.name}')}", f"sha256 = {toml_str(sha256(effects_file))}",
               f"size_bytes = {effects_file.stat().st_size}", ""]
 

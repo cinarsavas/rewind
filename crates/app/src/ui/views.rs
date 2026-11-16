@@ -135,7 +135,13 @@ pub fn draw(app: &mut RewindApp, root: &mut egui::Ui) {
             let out = area.show(ui, |ui| {
                 let t = app.page_anim();
                 let dir = app.page_dir();
-                column(ui, dir * (1.0 - t) * 9.0, |ui| {
+                // The Clips grid uses the whole window; text pages keep a readable column.
+                let max_w = if app.page == Page::Clips {
+                    layout().content_width.max(1700.0)
+                } else {
+                    layout().content_width
+                };
+                column(ui, max_w, dir * (1.0 - t) * 9.0, |ui| {
                     ui.set_opacity(t);
                     ui.add_space((1.0 - t) * 12.0);
                     match app.page {
@@ -167,9 +173,9 @@ pub fn draw(app: &mut RewindApp, root: &mut egui::Ui) {
 }
 
 /// Centre a content column of at most `content_width`, offset sideways for the page transition.
-fn column(ui: &mut egui::Ui, slide: f32, add: impl FnOnce(&mut egui::Ui)) {
+fn column(ui: &mut egui::Ui, max_w: f32, slide: f32, add: impl FnOnce(&mut egui::Ui)) {
     let avail = ui.available_width();
-    let w = avail.min(layout().content_width);
+    let w = avail.min(max_w);
     ui.horizontal_top(|ui| {
         ui.add_space((((avail - w) / 2.0) + slide).max(0.0));
         ui.vertical(|ui| {
@@ -1054,9 +1060,14 @@ fn clips_page(app: &mut RewindApp, ui: &mut egui::Ui) {
     // card width, so long names and the action icons never fight for space. The Size slider
     // sets the card width; the column count follows the window.
     const GAP: f32 = 14.0;
-    let avail = ui.available_width();
+    // Leave room for the scroll bar so the last column is never covered or cut off.
+    let avail = (ui.available_width() - 6.0).max(200.0);
     let wanted = (250.0 * app.cfg.clip_zoom).max(230.0);
-    let cols = (((avail + GAP) / (wanted + GAP)).floor() as usize).max(1);
+    // The nearest whole number of columns, so cards stay close to the chosen size instead
+    // of stretching to almost twice as wide when the window is a bit too narrow for one more.
+    let cols = (((avail + GAP) / (wanted + GAP)).round() as usize).max(1);
+    // Never squeeze cards below a usable width.
+    let cols = cols.min((((avail + GAP) / (220.0 + GAP)).floor() as usize).max(1));
     let card_w = ((avail - GAP * (cols as f32 - 1.0)) / cols as f32).floor();
     let total = app.filter_idx.len();
     let rows = total.div_ceil(cols);
@@ -1164,6 +1175,22 @@ fn clip_card(
                             vec2(inner, 64.0)
                         };
                         let (r, thumb) = ui.allocate_exact_size(size, Sense::click());
+                        // Extra animation: the picture zooms in a little under the pointer.
+                        let motion = extra_motion();
+                        let zoom = if motion && opts.want_thumb {
+                            ui.ctx().animate_bool_with_time(
+                                egui::Id::unique(("clip-zoom", &clip.path)),
+                                thumb.hovered(),
+                                0.22,
+                            )
+                        } else {
+                            0.0
+                        };
+                        let uv = {
+                            let z = 1.0 + 0.06 * zoom * zoom * (3.0 - 2.0 * zoom);
+                            let h = 0.5 / z;
+                            egui::Rect::from_min_max(pos2(0.5 - h, 0.5 - h), pos2(0.5 + h, 0.5 + h))
+                        };
                         let tex = if opts.want_thumb {
                             thumbs.get(ui.ctx(), &clip.path, clip.modified)
                         } else {
@@ -1172,6 +1199,7 @@ fn clip_card(
                         match &tex {
                             Some(tex) => {
                                 egui::Image::new((tex.id(), size))
+                                    .uv(uv)
                                     .corner_radius(CornerRadius::same(10))
                                     .paint_at(ui, r);
                             }
@@ -1213,6 +1241,7 @@ fn clip_card(
                             ) {
                                 crate::preview::Frame::Ready(tex, progress) => {
                                     egui::Image::new((tex.id(), size))
+                                        .uv(uv)
                                         .corner_radius(CornerRadius::same(10))
                                         .paint_at(ui, r);
                                     let bar = egui::Rect::from_min_max(
@@ -1270,7 +1299,24 @@ fn clip_card(
                             vec2(30.0, 30.0),
                         );
                         let star = ui.interact(star_rect, thumb.id.with("star"), Sense::click());
-                        if favorite || thumb.hovered() || star.hovered() {
+                        // Extra animation: starring pops the icon and sends out a ring.
+                        let pop_id = egui::Id::unique(("clip-star-pop", &clip.path));
+                        let now = ui.input(|i| i.time);
+                        let pop = ui
+                            .ctx()
+                            .data(|d| d.get_temp::<f64>(pop_id))
+                            .map(|t0| ((now - t0) / 0.45) as f32)
+                            .filter(|a| motion && *a < 1.0);
+                        if let Some(a) = pop {
+                            let e = 1.0 - (1.0 - a).powi(3);
+                            ui.painter().circle_stroke(
+                                star_rect.center(),
+                                12.0 + 18.0 * e,
+                                Stroke::new(2.0 * (1.0 - a), pal().warn.gamma_multiply(1.0 - a)),
+                            );
+                            ui.ctx().request_repaint();
+                        }
+                        if favorite || thumb.hovered() || star.hovered() || pop.is_some() {
                             ui.painter().circle_filled(
                                 star_rect.center(),
                                 14.0,
@@ -1284,7 +1330,9 @@ fn clip_card(
                                     Icon::Star
                                 },
                                 star_rect.center(),
-                                16.0,
+                                16.0 * pop
+                                    .map(|a| 1.0 + 0.5 * (a * std::f32::consts::PI).sin())
+                                    .unwrap_or(1.0),
                                 if favorite { pal().warn } else { Color32::WHITE },
                             );
                         }
@@ -1295,6 +1343,7 @@ fn clip_card(
                         }));
                         if star.clicked() {
                             action = Some(ClipAction::Favorite);
+                            ui.ctx().data_mut(|d| d.insert_temp(pop_id, now));
                         }
 
                         // ---- name and details, each on their own full-width line
@@ -1383,6 +1432,24 @@ fn clip_card(
         ui.rect_contains_pointer(resp.rect),
         anim_time(0.18),
     );
+    // Extra animation: a clip saved moments ago glows, so it's easy to spot.
+    if extra_motion() {
+        let age = std::time::SystemTime::now()
+            .duration_since(clip.modified)
+            .map(|d| d.as_secs_f32())
+            .unwrap_or(f32::MAX);
+        if age < 4.0 {
+            let fade = 1.0 - age / 4.0;
+            let pulse = 0.55 + 0.45 * (age * 5.0).cos();
+            ui.painter().rect_stroke(
+                resp.rect.expand(1.0),
+                CornerRadius::same(15),
+                Stroke::new(2.0, pal().accent.gamma_multiply(fade * pulse)),
+                egui::StrokeKind::Outside,
+            );
+            ui.ctx().request_repaint();
+        }
+    }
     if hover > 0.0 {
         ui.painter().rect_stroke(
             resp.rect,
@@ -1547,6 +1614,17 @@ fn settings_page(app: &mut RewindApp, ui: &mut egui::Ui, _ctx: &egui::Context) {
         );
         setting_row(
             ui,
+            "Extra animations",
+            "Thumbnails zoom on hover, starring pops, a new clip glows for a moment. Needs smooth animations.",
+            false,
+            |ui| {
+                ui.add_enabled_ui(app.draft.animations, |ui| {
+                    toggle(ui, &mut app.draft.extra_motion);
+                });
+            },
+        );
+        setting_row(
+            ui,
             "Smooth scrolling",
             "Glides the page between wheel notches instead of jumping.",
             false,
@@ -1570,7 +1648,7 @@ fn settings_page(app: &mut RewindApp, ui: &mut egui::Ui, _ctx: &egui::Context) {
             if effects_ready {
                 app.draft.effects.blurb()
             } else {
-                "Download a celebration pack from Add-ons to turn these on."
+                "Download the toggle effects from Add-ons to turn these on."
             },
             false,
             |ui| {
@@ -2936,7 +3014,7 @@ fn addons_page(app: &mut RewindApp, ui: &mut egui::Ui) {
     });
     ui.label(muted("Tip: say the phrase on its own, with a short pause before and after; it doesn't count inside a longer sentence. Press Apply after changing the phrase or language."));
 
-    // ---- Celebration effects
+    // ---- Custom sounds
     section_title(ui, "CUSTOM SOUNDS");
     card(ui, |ui| {
         let dir = super::sounds_dir();
@@ -3048,7 +3126,7 @@ fn addons_page(app: &mut RewindApp, ui: &mut egui::Ui) {
         }
     });
 
-    section_title(ui, "CELEBRATION EFFECTS");
+    section_title(ui, "TOGGLE EFFECTS");
     card(ui, |ui| {
         let installed = app.packs.effects.clone();
         let available: Vec<_> = index
@@ -3079,7 +3157,7 @@ fn addons_page(app: &mut RewindApp, ui: &mut egui::Ui) {
             let id = p.id.clone();
             setting_row(
                 ui,
-                &p.name,
+                effects_pack_name(&p.name),
                 &hint,
                 i + 1 == installed.len() && available.is_empty(),
                 |ui| {
@@ -3095,23 +3173,29 @@ fn addons_page(app: &mut RewindApp, ui: &mut egui::Ui) {
         }
         for (i, p) in available.iter().enumerate() {
             let hint = if p.author.is_empty() {
-                "Download to unlock these celebrations.".to_string()
+                "Download to unlock these toggle effects.".to_string()
             } else {
                 tf("by {author}", &[("author", &p.author)])
             };
             let key = format!("effects-{}", p.id);
             let p2 = p.clone();
-            setting_row(ui, &p.name, &hint, i + 1 == available.len(), |ui| {
-                pack_controls(
-                    app,
-                    ui,
-                    &key,
-                    false,
-                    true,
-                    move |a| a.packs.install_effects(&p2),
-                    |_| {},
-                );
-            });
+            setting_row(
+                ui,
+                effects_pack_name(&p.name),
+                &hint,
+                i + 1 == available.len(),
+                |ui| {
+                    pack_controls(
+                        app,
+                        ui,
+                        &key,
+                        false,
+                        true,
+                        move |a| a.packs.install_effects(&p2),
+                        |_| {},
+                    );
+                },
+            );
         }
     });
 
@@ -3157,9 +3241,11 @@ fn addons_page(app: &mut RewindApp, ui: &mut egui::Ui) {
                 ui.label(muted("Built in"));
             });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if current == "default" {
+                if current == "default" && app.packs.preview.is_none() {
                     status_text(ui, "In use", pal().accent);
                 } else if text_button(ui, None, "Use", true).clicked() {
+                    // Picking a theme ends any preview, so the choice shows at once.
+                    app.end_theme_preview();
                     app.draft.theme = "default".into();
                 }
             });
@@ -3186,9 +3272,10 @@ fn addons_page(app: &mut RewindApp, ui: &mut egui::Ui) {
                         }
                         app.packs.remove_theme(&t.id);
                     }
-                    if current == t.id {
+                    if current == t.id && app.packs.preview.is_none() {
                         status_text(ui, "In use", pal().accent);
                     } else if text_button(ui, None, "Use", true).clicked() {
+                        app.end_theme_preview();
                         app.draft.theme = t.id.clone();
                     }
                 });
@@ -3271,6 +3358,15 @@ fn addons_page(app: &mut RewindApp, ui: &mut egui::Ui) {
         }
     });
     ui.label(muted("The example is a fully commented copy of the default theme. Rename it, change the colours and press Apply."));
+}
+
+/// The built-in effects pack was called "Celebration effects" in older pack lists.
+fn effects_pack_name(name: &str) -> &str {
+    if name == "Celebration effects" {
+        "Toggle effects"
+    } else {
+        name
+    }
 }
 
 /// The example theme lives in docs/ so it is both readable on disk and embedded here.

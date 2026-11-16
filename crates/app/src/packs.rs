@@ -476,7 +476,7 @@ impl PackManager {
                 name: index
                     .as_ref()
                     .map(|(n, _)| n.clone())
-                    .unwrap_or_else(|| "Celebration effects".into()),
+                    .unwrap_or_else(|| "Toggle effects".into()),
                 author: index.map(|(_, a)| a).unwrap_or_default(),
                 styles,
             });

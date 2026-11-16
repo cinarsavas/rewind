@@ -350,6 +350,18 @@ pub fn animations_on() -> bool {
     ANIMATIONS.load(Ordering::Relaxed)
 }
 
+static EXTRA_MOTION: AtomicBool = AtomicBool::new(true);
+
+/// The "Extra animations" setting (also off when low-power mode is on).
+pub fn set_extra_motion(on: bool) {
+    EXTRA_MOTION.store(on, Ordering::Relaxed);
+}
+
+/// Extra motion: hover zoom, star pop, new-clip glow. Only with animations on.
+pub fn extra_motion() -> bool {
+    animations_on() && EXTRA_MOTION.load(Ordering::Relaxed)
+}
+
 /// Duration for a transition: 0 when animations are switched off, so state changes snap.
 pub fn anim_time(secs: f32) -> f32 {
     if animations_on() {
