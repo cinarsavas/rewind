@@ -88,7 +88,7 @@ Windows doesn't let any app draw over a game in **exclusive fullscreen** (it wou
 
 Open the **Add-ons** page. Nothing is installed by default.
 
-- **Voice clipping**: download the speech engine (about 15 MB) and a language (about 40 MB), turn it on, and say your phrase. A noise gate keeps recognition idle during silence, so it costs almost no CPU. Recognition happens on your PC; no audio is sent anywhere. Powered by [Vosk](https://alphacephei.com/vosk/).
+- **Voice clipping**: download the speech engine (about 15 MB) and a language (about 40 MB), turn it on, and say your phrase. Phrases are matched by sound, so words the small model doesn't know still work. A noise gate keeps recognition idle during silence, so it costs almost no CPU. Recognition happens on your PC; no audio is sent anywhere. Powered by [Vosk](https://alphacephei.com/vosk/).
 - **Themes**: pick one to download, or drop your own `.toml` into the themes folder. See [docs/THEMES.md](docs/THEMES.md).
 - **Toggle effects**: download the pack to unlock the effects played when a switch turns on. Effects stay off by default.
 
@@ -106,7 +106,7 @@ Trimming is lossless (no re-encoding) and needs `ffmpeg.exe` next to `Rewind.exe
 
 **The toast doesn't show in my game.** The game is probably in exclusive fullscreen. Switch it to borderless/windowed, or rely on the save sound.
 
-**Voice doesn't trigger.** Use words your language model knows, raise **Sensitivity**, and check the level meter on the Add-ons page moves when you speak.
+**Voice doesn't trigger.** Press **Test** on the Add-ons page and speak: if the status says *No sound from the microphone*, pick the mic you talk into under **Microphone**. Otherwise raise **Sensitivity** or try **Relaxed**. Phrases are matched by sound, so type them the way you say them.
 
 **Does Rewind phone home?** No. There is no telemetry or account. The network is used only for optional add-on downloads you start.
 

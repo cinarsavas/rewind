@@ -12,4 +12,6 @@ pub mod theme;
 pub mod toast;
 pub mod trim;
 pub mod version;
+pub mod phonetic;
+pub mod vocab;
 pub mod voice;

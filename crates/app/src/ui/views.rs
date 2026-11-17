@@ -471,13 +471,14 @@ fn replay_page(app: &mut RewindApp, ui: &mut egui::Ui, ctx: &egui::Context) {
                         chip(ui, audio_text(app));
                     });
                     ui.add_space(6.0);
-                    let label = if app.saving {
+                    let label = if app.is_saving() {
                         "Saving…".to_string()
                     } else {
                         tf("Save last {secs} s", &[("secs", &secs.to_string())])
                     };
                     let key = app.cfg.save_hotkey.to_string();
-                    if primary_button(ui, &label, Some(&key), active && !app.saving).clicked() {
+                    if primary_button(ui, &label, Some(&key), active && !app.is_saving()).clicked()
+                    {
                         app.save_replay(ctx);
                     }
                     ui.horizontal(|ui| {
@@ -2834,10 +2835,40 @@ fn addons_page(app: &mut RewindApp, ui: &mut egui::Ui) {
                 });
             },
         );
+        // Which microphone voice clipping hears. Normally the same one the recording uses.
+        let listening_to = app
+            .voice_handle()
+            .map(|v| v.shared.mic_name())
+            .filter(|n| !n.is_empty());
+        let mic_hint = match &listening_to {
+            Some(name) => tf("Listening to: {mic}", &[("mic", name)]),
+            None => t("Usually the same one the recording uses.").to_string(),
+        };
+        setting_row(ui, "Microphone", &mic_hint, false, |ui| {
+            let devices = app.input_devices.clone();
+            let label = if app.draft.voice.mic.is_empty() {
+                t("Same as recording").to_string()
+            } else {
+                crate::audio::label_for(&devices, &app.draft.voice.mic)
+            };
+            egui::ComboBox::from_id_salt("voice_mic")
+                .width(250.0)
+                .selected_text(label)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut app.draft.voice.mic,
+                        String::new(),
+                        t("Same as recording"),
+                    );
+                    for d in &devices {
+                        ui.selectable_value(&mut app.draft.voice.mic, d.id.clone(), d.display());
+                    }
+                });
+        });
         setting_row(
             ui,
             "Trigger phrase",
-            "Use words your language model knows, like \"clip that\" or \"klip al\". Separate several with commas: \"klip al, klibi al\".",
+            "Type it the way you say it. Rewind matches by sound, so words the model doesn't know still work. Separate several with commas: \"klip al, klibi al\".",
             false,
             |ui| {
                 ui.horizontal(|ui| {
@@ -2904,10 +2935,18 @@ fn addons_page(app: &mut RewindApp, ui: &mut egui::Ui) {
                 .map(|v| (v.shared.status(), v.shared.level()))
             {
                 Some((VoiceStatus::Listening, level)) => {
+                    let silent = app
+                        .voice_handle()
+                        .map(|v| v.shared.mic_silent())
+                        .unwrap_or(false);
                     if testing {
                         progress_bar(ui, (level * 6.0).clamp(0.0, 1.0), 120.0);
                     }
-                    status_text(ui, "Listening", pal().accent);
+                    if silent {
+                        status_text(ui, "No sound from the microphone", pal().warn);
+                    } else {
+                        status_text(ui, "Listening", pal().accent);
+                    }
                 }
                 Some((VoiceStatus::Starting, _)) => status_text(ui, "Starting…", pal().muted),
                 Some((VoiceStatus::Phrase(w), _)) => {
@@ -3012,6 +3051,19 @@ fn addons_page(app: &mut RewindApp, ui: &mut egui::Ui) {
             card_row_heard(ui, &format!("\"{}\"{conf}", h.text), t(why), color);
         }
     });
+    if app
+        .voice_handle()
+        .map(|v| v.shared.mic_silent())
+        .unwrap_or(false)
+    {
+        ui.label(
+            egui::RichText::new(t(
+                "This microphone sends only silence: it may be muted, or it's not the one you talk into. Pick another one above.",
+            ))
+            .color(pal().warn)
+            .size(12.5),
+        );
+    }
     ui.label(muted("Tip: say the phrase on its own, with a short pause before and after; it doesn't count inside a longer sentence. Press Apply after changing the phrase or language."));
 
     // ---- Custom sounds

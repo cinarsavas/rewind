@@ -4,7 +4,7 @@
 //! The list is only built when the Settings page asks for it; it is cached by the UI so
 //! the UI thread doesn't touch COM every frame.
 
-use wasapi::{initialize_mta, DeviceEnumerator, Direction};
+use wasapi::{initialize_mta, DeviceEnumerator, Direction, Role};
 
 /// One selectable endpoint. `id` is the WASAPI endpoint id OBS wants for `device_id`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -34,10 +34,16 @@ pub fn list(direction: Direction) -> Vec<AudioDevice> {
     let Ok(enumerator) = DeviceEnumerator::new() else {
         return Vec::new();
     };
-    let default_id = enumerator
-        .get_default_device(direction)
-        .ok()
-        .and_then(|d| d.get_id().ok());
+    // For microphones, "default" means the default *communications* device: that's the one
+    // OBS records when the setting is "System default", and the one voice clipping hears.
+    let default_id = match direction {
+        Direction::Capture => enumerator
+            .get_default_device_for_role(direction, Role::Communications)
+            .or_else(|_| enumerator.get_default_device(direction)),
+        Direction::Render => enumerator.get_default_device(direction),
+    }
+    .ok()
+    .and_then(|d| d.get_id().ok());
     let Ok(collection) = enumerator.get_device_collection(direction) else {
         return Vec::new();
     };

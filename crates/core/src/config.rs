@@ -340,6 +340,9 @@ pub struct VoiceConfig {
     pub strictness: Strictness,
     /// Double-check with the Whisper add-on when it's installed (more accurate, more CPU).
     pub use_whisper: bool,
+    /// WASAPI endpoint id of the microphone to listen to. Empty: the same one the recording
+    /// uses (Settings → Audio).
+    pub mic: String,
 }
 
 /// How picky voice clipping is. Relaxed misses less but may save a clip by mistake more often.
@@ -361,12 +364,22 @@ impl Strictness {
             Strictness::Strict => "Strict",
         }
     }
-    /// Lowest per-word confidence that still counts.
+    /// Lowest per-word confidence that still counts (English).
     pub fn min_confidence(self) -> f32 {
-        match self {
-            Strictness::Relaxed => 0.45,
-            Strictness::Normal => 0.65,
-            Strictness::Strict => 0.8,
+        self.min_confidence_for(false)
+    }
+    /// Lowest per-word confidence that still counts. Turkish relies on near-miss words
+    /// instead: its small model gives real triggers scores anywhere from 0.2 to 1.0, so a
+    /// high bar mostly threw away clips people asked for. English confidence does separate
+    /// near misses a little, so it stays higher.
+    pub fn min_confidence_for(self, turkish: bool) -> f32 {
+        match (self, turkish) {
+            (Strictness::Relaxed, false) => 0.5,
+            (Strictness::Normal, false) => 0.75,
+            (Strictness::Strict, false) => 0.9,
+            (Strictness::Relaxed, true) => 0.0,
+            (Strictness::Normal, true) => 0.2,
+            (Strictness::Strict, true) => 0.5,
         }
     }
     /// Other words allowed around the phrase.
@@ -387,6 +400,7 @@ impl Default for VoiceConfig {
             sensitivity: 0.5,
             strictness: Strictness::Normal,
             use_whisper: true,
+            mic: String::new(),
         }
     }
 }

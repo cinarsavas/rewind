@@ -3,6 +3,8 @@
 
 use std::collections::VecDeque;
 
+use crate::phonetic::{phones, score, score_inside, Phone};
+
 /// Energy gate with pre-roll and hang-over. Feed it microphone chunks; it hands back audio
 /// only while someone is (or just was) speaking.
 pub struct VoiceGate {
@@ -86,6 +88,107 @@ impl VoiceGate {
             self.preroll.push_back(*s);
         }
         None
+    }
+}
+
+/// Converts microphone audio to what the recogniser wants: 16 kHz mono 16-bit.
+///
+/// Rewind opens the microphone in the device's own format, exactly like the recording does
+/// (OBS), instead of asking Windows to convert. Some drivers (many USB headsets, some
+/// Realtek setups) refuse that conversion or hand back silence, which is why voice clipping
+/// could hear nothing on a PC where the recorded mic worked fine.
+///
+/// The resampler is a windowed-sinc low-pass with a precomputed polyphase table: clean
+/// down to 16 kHz from any rate (44.1, 48, 96 kHz …), a few hundred multiply-adds per
+/// output sample.
+pub struct MicConverter {
+    channels: usize,
+    ratio: f64,
+    half: usize,
+    table: Vec<f32>,
+    phases: usize,
+    buf: Vec<f32>,
+    pos: f64,
+}
+
+impl MicConverter {
+    pub const OUT_RATE: u32 = 16_000;
+
+    pub fn new(in_rate: u32, channels: usize) -> Self {
+        let ratio = in_rate.max(1) as f64 / Self::OUT_RATE as f64;
+        // Cut-off just under the new Nyquist (8 kHz), in cycles per *input* sample.
+        let fc = (0.5 / ratio.max(1.0)) * 0.92;
+        let half = ((8.0 / (2.0 * fc)).ceil() as usize).clamp(8, 64);
+        let phases = 256;
+        let taps = 2 * half;
+        let mut table = vec![0.0f32; phases * taps];
+        for ph in 0..phases {
+            let frac = ph as f64 / phases as f64;
+            let mut sum = 0.0;
+            for k in 0..taps {
+                // Input sample k sits at offset (k - half + 1) - frac from the output point.
+                let x = (k as f64 - half as f64 + 1.0) - frac;
+                let sinc = if x.abs() < 1e-9 {
+                    1.0
+                } else {
+                    let a = std::f64::consts::PI * 2.0 * fc * x;
+                    a.sin() / a
+                };
+                let w = 0.5 + 0.5 * (std::f64::consts::PI * x / half as f64).cos();
+                let v = 2.0 * fc * sinc * if x.abs() < half as f64 { w } else { 0.0 };
+                table[ph * taps + k] = v as f32;
+                sum += v;
+            }
+            // Unity gain at DC for every phase.
+            if sum.abs() > 1e-9 {
+                for k in 0..taps {
+                    table[ph * taps + k] /= sum as f32;
+                }
+            }
+        }
+        Self {
+            channels: channels.max(1),
+            ratio,
+            half,
+            table,
+            phases,
+            buf: vec![0.0; half],
+            pos: half as f64 - 1.0,
+        }
+    }
+
+    /// Feed interleaved samples in -1..=1; 16 kHz mono 16-bit samples are appended to `out`.
+    pub fn push(&mut self, interleaved: &[f32], out: &mut Vec<i16>) {
+        let ch = self.channels;
+        for frame in interleaved.chunks_exact(ch) {
+            let mono = frame.iter().sum::<f32>() / ch as f32;
+            self.buf.push(mono);
+        }
+        let taps = 2 * self.half;
+        loop {
+            let base = self.pos.floor();
+            let i = base as usize;
+            if i + self.half >= self.buf.len() {
+                break;
+            }
+            let frac = self.pos - base;
+            let ph = ((frac * self.phases as f64) as usize).min(self.phases - 1);
+            let coeffs = &self.table[ph * taps..(ph + 1) * taps];
+            let start = i + 1 - self.half;
+            let acc: f32 = self.buf[start..start + taps]
+                .iter()
+                .zip(coeffs)
+                .map(|(x, c)| x * c)
+                .sum();
+            out.push((acc * 32767.0).clamp(-32768.0, 32767.0) as i16);
+            self.pos += self.ratio;
+        }
+        // Drop input that no future output needs.
+        let keep_from = (self.pos.floor() as usize + 1).saturating_sub(self.half);
+        if keep_from > 0 {
+            self.buf.drain(..keep_from.min(self.buf.len()));
+            self.pos -= keep_from as f64;
+        }
     }
 }
 
@@ -190,15 +293,24 @@ pub fn normalize(s: &str) -> String {
 
 /// Decides whether recognised text is the trigger phrase, with a cool-down so one
 /// utterance can't save two clips.
+///
+/// Matching is by **sound**, not by exact words: what was heard is turned into sounds
+/// ([`crate::phonetic`]) and compared with the sounds of every accepted spelling of the
+/// phrase. So "klip şunu" matches a "klipşunu" trigger, "klip all" matches "klip al", and
+/// a phrase spelled with other known words (see [`crate::vocab::plan`]) still counts.
 pub struct PhraseMatcher {
-    /// Normalised words of the first trigger phrase (kept for [`Self::matches`]).
+    /// Normalised words of the first trigger phrase (kept for [`Self::phrase`]).
     words: Vec<String>,
-    /// Every trigger phrase; the user can give several, separated by commas.
-    alternatives: Vec<Vec<String>>,
+    /// Sounds of every accepted spelling, and how many words each has.
+    targets: Vec<(Vec<Phone>, usize)>,
+    turkish: bool,
     cooldown_ms: u64,
     last_fire_ms: Option<u64>,
     /// Extra words allowed around the phrase (0 = the phrase must be said on its own).
     slack: usize,
+    /// How different (per sound) a match may sound. 0 = the same sounds; a little more for
+    /// free-form text from Whisper, which spells unfamiliar words its own way.
+    tolerance: f32,
 }
 
 /// Split a trigger setting like "klip al, klibi al" into its phrases.
@@ -210,26 +322,66 @@ pub fn split_phrases(phrase: &str) -> Vec<&str> {
         .collect()
 }
 
+/// Words of recognised text, without punctuation and Vosk's `[unk]`.
+fn heard_words(recognised: &str) -> Vec<String> {
+    recognised
+        .split(|c: char| !c.is_alphanumeric() && c != '\'')
+        .map(|w| w.trim_matches('\''))
+        .filter(|w| !w.is_empty() && !w.eq_ignore_ascii_case("unk"))
+        .map(String::from)
+        .collect()
+}
+
 impl PhraseMatcher {
+    /// A matcher for the phrases in `phrase` (comma separated), judged with Turkish sounds.
+    /// See [`Self::for_language`].
     pub fn new(phrase: &str, cooldown_ms: u64) -> Self {
-        let alternatives: Vec<Vec<String>> = split_phrases(phrase)
+        Self::for_language(phrase, cooldown_ms, true)
+    }
+
+    pub fn for_language(phrase: &str, cooldown_ms: u64, turkish: bool) -> Self {
+        let spellings: Vec<String> = split_phrases(phrase)
             .into_iter()
-            .map(|p| {
-                normalize(p)
-                    .split(' ')
-                    .filter(|w| !w.is_empty())
-                    .map(String::from)
-                    .collect::<Vec<_>>()
-            })
-            .filter(|w| !w.is_empty())
+            .map(String::from)
             .collect();
-        Self {
-            words: alternatives.first().cloned().unwrap_or_default(),
-            alternatives,
+        let mut m = Self {
+            words: Vec::new(),
+            targets: Vec::new(),
+            turkish,
             cooldown_ms,
             last_fire_ms: None,
             slack: 0,
-        }
+            tolerance: 0.0,
+        };
+        m.set_spellings(&spellings);
+        m
+    }
+
+    /// Replace what counts as the phrase, e.g. with [`crate::vocab::ListenPlan::spellings`].
+    pub fn with_spellings(mut self, spellings: &[String]) -> Self {
+        self.set_spellings(spellings);
+        self
+    }
+
+    fn set_spellings(&mut self, spellings: &[String]) {
+        self.targets = spellings
+            .iter()
+            .map(|s| {
+                let words = heard_words(s);
+                (phones(&words.join(" "), self.turkish), words.len())
+            })
+            .filter(|(p, n)| !p.is_empty() && *n > 0)
+            .collect();
+        self.words = spellings
+            .first()
+            .map(|s| {
+                normalize(s)
+                    .split(' ')
+                    .filter(|w| !w.is_empty())
+                    .map(String::from)
+                    .collect()
+            })
+            .unwrap_or_default();
     }
 
     /// Allow `extra` other words around the phrase (Relaxed strictness).
@@ -238,17 +390,47 @@ impl PhraseMatcher {
         self
     }
 
+    /// Accept spellings that sound up to `per_sound` different (0 = exact sounds).
+    pub fn with_tolerance(mut self, per_sound: f32) -> Self {
+        self.tolerance = per_sound.max(0.0);
+        self
+    }
+
     pub fn phrase(&self) -> String {
         self.words.join(" ")
+    }
+
+    fn same_sound(&self, target: &[Phone], heard: &[Phone]) -> bool {
+        if heard == target {
+            return true;
+        }
+        self.tolerance > 0.0 && score(target, heard) <= self.tolerance
+    }
+
+    /// Where the phrase was heard: `Some(extra words around it)`, or `None`.
+    fn locate(&self, heard: &[String]) -> Option<usize> {
+        let n = heard.len();
+        let mut best: Option<usize> = None;
+        for (target, _) in &self.targets {
+            for start in 0..n {
+                for end in start + 1..=n {
+                    let p = phones(&heard[start..end].join(" "), self.turkish);
+                    if p.len() > target.len() * 2 + 4 {
+                        break;
+                    }
+                    if self.same_sound(target, &p) {
+                        let extra = n - (end - start);
+                        best = Some(best.map_or(extra, |b: usize| b.min(extra)));
+                    }
+                }
+            }
+        }
+        best
     }
 
     /// Strict check for a *finished* utterance: the trigger must be the whole thing that was
     /// said (ignoring `[unk]`), not a phrase buried in a sentence, and every word must be
     /// recognised with at least `min_conf` confidence when the recogniser reports it.
-    ///
-    /// This is what stops a small model (Turkish especially) from saving a clip for half of
-    /// what you say: with a tiny grammar, anything that sounds a bit like "klip al" gets
-    /// forced onto it, but those guesses come back as longer utterances or low confidence.
     pub fn matches_utterance(
         &mut self,
         recognised: &str,
@@ -268,36 +450,14 @@ impl PhraseMatcher {
         min_conf: f32,
         now_ms: u64,
     ) -> Verdict {
-        let norm = normalize(recognised);
-        let heard: Vec<&str> = norm
-            .split(' ')
-            .filter(|w| !w.is_empty() && *w != "unk")
-            .collect();
-        if self.alternatives.is_empty() || heard.is_empty() {
+        let heard = heard_words(recognised);
+        if self.targets.is_empty() || heard.is_empty() {
             return Verdict::Nothing;
         }
-        let mut alone = false;
-        let mut inside = false;
-        for words in &self.alternatives {
-            if heard.len() < words.len() {
-                continue;
-            }
-            let found = heard
-                .windows(words.len())
-                .any(|w| w.iter().zip(words).all(|(a, b)| a == b));
-            if found {
-                inside = true;
-                if heard.len() <= words.len() + self.slack {
-                    alone = true;
-                }
-            }
-        }
-        if !alone {
-            return if inside {
-                Verdict::NotAlone
-            } else {
-                Verdict::Different
-            };
+        match self.locate(&heard) {
+            None => return Verdict::Different,
+            Some(extra) if extra > self.slack => return Verdict::NotAlone,
+            Some(_) => {}
         }
         if word_conf.map(|c| c < min_conf).unwrap_or(false) {
             return Verdict::Unsure;
@@ -311,35 +471,22 @@ impl PhraseMatcher {
         Verdict::Match
     }
 
-    /// Worth a second opinion: a short utterance that shares at least half the words of a
-    /// trigger phrase (for "klip al": "klip", "al", "kilit al" …). Used to decide when to ask
-    /// the heavier Whisper add-on.
+    /// Worth a second opinion: a short utterance that sounds partly like the phrase ("klip",
+    /// "kilit al" for "klip al"). Used to decide when to ask the heavier Whisper add-on.
     pub fn might_be(&self, recognised: &str) -> bool {
-        let norm = normalize(recognised);
-        let heard: Vec<&str> = norm
-            .split(' ')
-            .filter(|w| !w.is_empty() && *w != "unk")
-            .collect();
+        let heard = heard_words(recognised);
         if heard.is_empty() {
             return false;
         }
-        self.alternatives.iter().any(|words| {
-            let shared = words.iter().filter(|w| heard.contains(&w.as_str())).count();
-            heard.len() <= words.len() + 3 && shared * 2 >= words.len()
-        })
+        let all = phones(&heard.join(" "), self.turkish);
+        self.targets
+            .iter()
+            .any(|(t, words)| heard.len() <= words + 3 && score_inside(t, &all) <= 0.35)
     }
 
     /// Looser check: the phrase anywhere in `recognised`, with the cool-down.
     pub fn matches(&mut self, recognised: &str, now_ms: u64) -> bool {
-        if self.words.is_empty() {
-            return false;
-        }
-        let norm = normalize(recognised);
-        let heard: Vec<&str> = norm.split(' ').filter(|w| !w.is_empty()).collect();
-        let hit = heard
-            .windows(self.words.len())
-            .any(|w| w.iter().zip(&self.words).all(|(a, b)| a == b));
-        if !hit {
+        if self.locate(&heard_words(recognised)).is_none() {
             return false;
         }
         if let Some(last) = self.last_fire_ms {
@@ -697,5 +844,74 @@ mod tests {
         assert_eq!(detailed.min_conf, Some(0.41));
         assert_eq!(parse_result("not json"), None);
         assert_eq!(parse_result("{\"other\": 1}"), None);
+    }
+
+    fn sine(freq: f32, rate: u32, secs: f32, channels: usize) -> Vec<f32> {
+        let n = (rate as f32 * secs) as usize;
+        (0..n)
+            .flat_map(|i| {
+                let v = 0.5 * (2.0 * std::f32::consts::PI * freq * i as f32 / rate as f32).sin();
+                std::iter::repeat(v).take(channels)
+            })
+            .collect()
+    }
+
+    fn rms(x: &[i16]) -> f32 {
+        let skip = x.len() / 5; // ignore the filter's start-up
+        let s: f64 = x[skip..].iter().map(|v| (*v as f64).powi(2)).sum();
+        ((s / (x.len() - skip) as f64).sqrt() / 32767.0) as f32
+    }
+
+    #[test]
+    fn converter_resamples_speech_band_and_removes_aliases() {
+        for (rate, ch) in [(48_000, 2), (44_100, 1), (96_000, 4), (16_000, 1)] {
+            let mut c = MicConverter::new(rate, ch);
+            let mut out = Vec::new();
+            // Feed in odd-sized chunks, like a real capture buffer.
+            let input = sine(1_000.0, rate, 1.0, ch);
+            for chunk in input.chunks(ch * 437) {
+                c.push(chunk, &mut out);
+            }
+            let expected = MicConverter::OUT_RATE as f32;
+            assert!(
+                (out.len() as f32 - expected).abs() < expected * 0.01,
+                "{rate} Hz: {} samples",
+                out.len()
+            );
+            // A 1 kHz tone at 0.5 amplitude keeps its level (rms 0.354).
+            assert!(
+                (rms(&out) - 0.354).abs() < 0.02,
+                "{rate} Hz: rms {}",
+                rms(&out)
+            );
+        }
+        // A 12 kHz tone can't exist at 16 kHz; it must be filtered out, not folded down.
+        let mut c = MicConverter::new(48_000, 1);
+        let mut out = Vec::new();
+        c.push(&sine(12_000.0, 48_000, 1.0, 1), &mut out);
+        assert!(rms(&out) < 0.02, "alias leaked: {}", rms(&out));
+    }
+
+    #[test]
+    fn matching_is_by_sound() {
+        let mut m = PhraseMatcher::for_language("klipşunu", 0, true);
+        assert!(m.matches_utterance("klip şunu", None, 0.6, 1));
+        let mut m = PhraseMatcher::for_language("klip al", 0, true);
+        assert!(m.matches_utterance("klip all", None, 0.6, 1));
+        assert_eq!(m.judge("kalp al", None, 0.6, 2), Verdict::Different);
+        // Extra spellings from the dictionary planner count too.
+        let mut m = PhraseMatcher::for_language("kliple", 0, true).with_spellings(&[
+            "kliple".into(),
+            "klip le".into(),
+            "klip ile".into(),
+        ]);
+        assert!(m.matches_utterance("klip ile", None, 0.6, 1));
+        // English uses its own sound key.
+        let mut m = PhraseMatcher::for_language("clip that", 0, false);
+        assert!(m.matches_utterance("Clip that!", None, 0.6, 1));
+        assert_eq!(m.judge("keep that", None, 0.6, 2), Verdict::Different);
+        // Whisper tolerance: spelled a bit differently but sounds the same.
+        let mut m = PhraseMatcher::for_language("klip al", 0, true).with_tolerance(0.12);
+        assert!(m.matches_utterance("Kılip al.", None, 0.6, 1));
     }
 }

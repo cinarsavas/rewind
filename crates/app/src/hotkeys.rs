@@ -2,6 +2,7 @@
 
 use std::str::FromStr;
 use std::sync::mpsc::{channel, Receiver};
+use std::sync::{Arc, Mutex};
 
 use eframe::egui;
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
@@ -18,6 +19,8 @@ pub struct Hotkeys {
     manager: GlobalHotKeyManager,
     registered: Vec<(HotKey, u32, Action)>,
     rx: Receiver<GlobalHotKeyEvent>,
+    /// Ids of the save hotkey, handled right inside the key handler.
+    save_ids: Arc<Mutex<Vec<u32>>>,
 }
 
 fn to_code(key: &str) -> Option<Code> {
@@ -62,11 +65,26 @@ fn to_hotkey(h: &Hotkey) -> Result<HotKey, String> {
 }
 
 impl Hotkeys {
-    /// Key presses wake the UI loop through `ctx`, so they work while the window is hidden.
-    pub fn new(ctx: egui::Context) -> Result<Self, String> {
+    /// The save hotkey saves (and plays the sound) straight from the key handler, without
+    /// waiting for the app's window to wake up. Other keys wake the UI loop through `ctx`,
+    /// so they work while the window is hidden.
+    pub fn new(ctx: egui::Context, quick: Arc<crate::quick::QuickSave>) -> Result<Self, String> {
         let manager = GlobalHotKeyManager::new().map_err(|e| format!("hotkey service: {e}"))?;
         let (tx, rx) = channel();
+        let save_ids: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(Vec::new()));
+        let ids = save_ids.clone();
         GlobalHotKeyEvent::set_event_handler(Some(move |e: GlobalHotKeyEvent| {
+            let is_save = ids.lock().map(|ids| ids.contains(&e.id)).unwrap_or(false);
+            if is_save {
+                if e.state != HotKeyState::Pressed {
+                    return;
+                }
+                if quick.trigger() || quick.is_saving() {
+                    ctx.request_repaint();
+                    return;
+                }
+                // Nothing to save (Instant Replay is off): let the app say so.
+            }
             let _ = tx.send(e);
             ctx.request_repaint();
         }));
@@ -74,6 +92,7 @@ impl Hotkeys {
             manager,
             registered: Vec::new(),
             rx,
+            save_ids,
         })
     }
 
@@ -94,6 +113,14 @@ impl Hotkeys {
                 },
                 Err(e) => problems.push(e),
             }
+        }
+        if let Ok(mut ids) = self.save_ids.lock() {
+            *ids = self
+                .registered
+                .iter()
+                .filter(|(_, _, a)| *a == Action::SaveReplay)
+                .map(|(_, id, _)| *id)
+                .collect();
         }
         problems
     }

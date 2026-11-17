@@ -12,6 +12,7 @@ mod packs;
 mod perf;
 mod platform;
 mod preview;
+mod quick;
 mod runtime;
 mod share;
 mod sounds;

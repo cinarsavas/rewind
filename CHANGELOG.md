@@ -2,6 +2,25 @@
 
 All notable changes are listed here. The section for a tag becomes that release's notes.
 
+## [0.3.8]
+
+### Changed
+- **Voice clipping matches by sound, not by exact words.** Turkish is written the way it's said, so Rewind now compares the *sounds* of what was heard with your phrase. Any phrase works, even with words the small Turkish model has never seen ("kliple", "klipşunu", "klipliyorum"): Rewind reads the model's own dictionary (about 98 000 Turkish words) and spells the phrase with known words that sound the same, plus the way people actually say it ("klip" → "kilip"). "klip şunu" and "klipşunu" are the same; "klip all" counts as "klip al".
+- **Far fewer clips nobody asked for.** For every phrase, Rewind now picks near-miss words from the dictionary automatically ("kalıp", "kulüp", "galip" for "klip"; "keep", "creep", "clap" for "clip"), so speech that only *sounds a bit like* the phrase lands on one of those. On a test set of natural-sounding synthetic speech with game-like noise: Turkish false triggers went from 4 % to none; English from 23 % to 16 % ("keep that" used to save a clip 14 times out of 18; now never). Confidence levels were re-tuned per language from the same tests.
+- A phrase split in two by the recogniser ("klip" … "al") is now recognised as one.
+- **The clip sound plays the moment you press the hotkey or say the phrase**, not after the file is written. The hotkey, voice and tray now start the save directly instead of first waking the app's window, which could lag in a game. A custom .mp3 stays loaded, so it plays without a decoding delay; if a save then fails you hear the Windows error sound.
+- The replay page's recording dot redraws at 20 instead of 30 frames a second (less CPU, looks the same).
+
+### Fixed
+- **Voice clipping couldn't hear some microphones that recorded fine.** Two causes:
+  - Windows keeps two default microphones (the default and the default *communications* device). For "System default", the recording (OBS) uses the communications one; voice clipping used the other. When they differ, e.g. a headset for calls and a webcam mic as the plain default, voice heard the wrong mic. Both now use the same one, and the mic list marks that one as "(default)".
+  - Voice asked Windows to convert the mic to 16 kHz mono, which some drivers (many USB headsets, some Realtek setups) refuse or answer with silence. It now opens the mic in its own format, like the recording does, and converts it itself (with the old way as a fallback).
+- Changing the microphone in Settings now restarts voice listening on the new one (it kept the old one until a restart). "System default" follows Windows when the default mic changes, e.g. when you plug in a headset.
+
+### Added
+- **Microphone** choice for voice clipping (Add-ons → Voice clipping): "Same as recording" by default, or any microphone. The row shows which mic it's listening to.
+- If the microphone sends nothing but silence (muted, or not the one you talk into), the status says so instead of "Listening".
+
 ## [0.3.7]
 
 ### Changed

@@ -104,6 +104,13 @@ pub fn clip_saved_sound() {
     }
 }
 
+/// A short Windows error sound, for a save that failed after its "saved" sound played.
+pub fn error_sound() {
+    unsafe {
+        MessageBeep(MB_ICONHAND);
+    }
+}
+
 /// Name of the game or app in front right now, for per-game clip folders. `None` for the
 /// desktop, Explorer, Rewind itself and other shell windows (those clips stay in the root).
 pub fn foreground_app_name() -> Option<String> {

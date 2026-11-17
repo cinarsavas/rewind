@@ -271,6 +271,17 @@ pub fn t(s: &str) -> &str {
         "Save a clip when I say the phrase" => "Cümleyi söylediğimde klip kaydet",
         "Download the engine and a language first." => "Önce motoru ve bir dil indir.",
         "Trigger phrase" => "Tetik cümlesi",
+        "Type it the way you say it. Rewind matches by sound, so words the model doesn't know still work. Separate several with commas: \"klip al, klibi al\"." => {
+            "Söylediğin gibi yaz. Rewind sese göre eşleştirir, bu yüzden modelin bilmediği kelimeler de çalışır. Birden fazlasını virgülle ayır: \"klip al, klibi al\"."
+        }
+        "Usually the same one the recording uses." => "Genelde kayıtta kullanılanla aynıdır.",
+        "Same as recording" => "Kayıttakiyle aynı",
+        "No sound from the microphone" => "Mikrofondan ses gelmiyor",
+        "This microphone sends only silence: it may be muted, or it's not the one you talk into. Pick another one above." => {
+            "Bu mikrofon yalnızca sessizlik gönderiyor: sessize alınmış olabilir ya da konuştuğun mikrofon bu değil. Yukarıdan başka birini seç."
+        }
+        "Listening to: {mic}" => "Dinlenen: {mic}",
+        "couldn't open the microphone: {e}" => "mikrofon açılamadı: {e}",
         "Use words your language model knows, like \"clip that\" or \"klip al\". Separate several with commas: \"klip al, klibi al\"." => {
             "Dil modelinin bildiği kelimeler kullan, örneğin \"klip al\". Birden fazlasını virgülle ayır: \"klip al, klibi al\"."
         }
@@ -595,6 +606,7 @@ pub fn tf(s: &str, vars: &[(&str, &str)]) -> String {
 const TEMPLATES: &[&str] = &[
     "Desktop audio unavailable: {e}",
     "Microphone unavailable: {e}",
+    "couldn't open the microphone: {e}",
     "Game capture unavailable ({e}); recording the monitor only.",
     "{h} couldn't be registered ({e}). Another app may be using it.",
     "Couldn't save replay — {e}",

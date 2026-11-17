@@ -89,27 +89,61 @@ pub fn remove(dir: &Path, name: &str) {
 pub fn play_clip_saved(dir: &Path, chosen: &str) {
     if !chosen.is_empty() && !chosen.contains(['/', '\\']) {
         let path = dir.join(chosen);
-        if path.is_file() && play_file(&path) {
+        if path.is_file() && send(Cmd::Play(path)) {
             return;
         }
     }
     crate::platform::clip_saved_sound();
 }
 
-/// Queue a file on the player thread. False if the player couldn't start.
-fn play_file(path: &Path) -> bool {
-    static PLAYER: OnceLock<Option<Sender<PathBuf>>> = OnceLock::new();
+/// Open the chosen custom sound ahead of time, so the first save plays it without delay.
+pub fn prepare(dir: &Path, chosen: &str) {
+    if !chosen.is_empty() && !chosen.contains(['/', '\\']) {
+        let path = dir.join(chosen);
+        if path.is_file() {
+            send(Cmd::Prepare(path));
+        }
+    }
+}
+
+enum Cmd {
+    Prepare(PathBuf),
+    Play(PathBuf),
+}
+
+/// Queue a command on the player thread. False if the player couldn't start.
+fn send(cmd: Cmd) -> bool {
+    static PLAYER: OnceLock<Option<Sender<Cmd>>> = OnceLock::new();
     let player = PLAYER.get_or_init(|| {
-        let (tx, rx) = channel::<PathBuf>();
+        let (tx, rx) = channel::<Cmd>();
         std::thread::Builder::new()
             .name("rewind-sound".into())
             .spawn(move || {
-                while let Ok(mut path) = rx.recv() {
+                // The file that's open right now; replaying it skips decoding it again.
+                let mut open: Option<PathBuf> = None;
+                while let Ok(mut cmd) = rx.recv() {
                     // Several saves in a row: only the latest sound matters.
                     while let Ok(newer) = rx.try_recv() {
-                        path = newer;
+                        cmd = newer;
                     }
-                    mci::play(&path);
+                    match cmd {
+                        Cmd::Prepare(path) => {
+                            if open.as_ref() != Some(&path) {
+                                open = mci::open(&path).then_some(path);
+                            }
+                        }
+                        Cmd::Play(path) => {
+                            if open.as_ref() != Some(&path) {
+                                open = mci::open(&path).then_some(path);
+                            }
+                            if open.is_some() {
+                                mci::play_from_start();
+                            } else {
+                                // Not playable (odd codec): the chime rather than silence.
+                                crate::platform::clip_saved_sound();
+                            }
+                        }
+                    }
                 }
                 mci::close();
             })
@@ -118,7 +152,7 @@ fn play_file(path: &Path) -> bool {
     });
     player
         .as_ref()
-        .map(|tx| tx.send(path.to_path_buf()).is_ok())
+        .map(|tx| tx.send(cmd).is_ok())
         .unwrap_or(false)
 }
 
@@ -136,23 +170,26 @@ mod mci {
         send("close rewindclipsound");
     }
 
-    pub fn play(path: &Path) {
+    /// Open (and decode the header of) a sound file. True when it can be played.
+    pub fn open(path: &Path) -> bool {
         close();
         let open = format!(
             "open \"{}\" type mpegvideo alias rewindclipsound",
             path.display()
         );
-        if send(&open) == 0 {
-            send("play rewindclipsound");
-        } else {
-            // Not playable (odd codec): fall back to the chime rather than staying silent.
-            crate::platform::clip_saved_sound();
-        }
+        send(&open) == 0
+    }
+
+    pub fn play_from_start() {
+        send("play rewindclipsound from 0");
     }
 }
 
 #[cfg(not(windows))]
 mod mci {
     pub fn close() {}
-    pub fn play(_path: &std::path::Path) {}
+    pub fn open(_path: &std::path::Path) -> bool {
+        false
+    }
+    pub fn play_from_start() {}
 }

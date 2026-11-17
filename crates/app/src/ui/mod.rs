@@ -20,6 +20,7 @@ use crate::overlay::Overlay;
 use crate::packs::{PackEvent, PackManager};
 use crate::perf::Sampler;
 use crate::platform;
+use crate::quick::{self, QuickSave};
 use crate::runtime;
 use crate::thumbs::Thumbs;
 use crate::tray::{Tray, TrayAction};
@@ -187,7 +188,13 @@ pub struct RewindApp {
     scan_inflight: bool,
     scan_again: bool,
     pub monitors: Vec<MonitorInfo>,
-    pub saving: bool,
+    quick: std::sync::Arc<QuickSave>,
+    /// What the quick-save was last armed with, to re-arm only when something changed.
+    quick_armed: Option<(bool, u64, quick::Settings)>,
+    /// Bumped whenever the engine is started or rebuilt (its replay output changes).
+    engine_gen: u64,
+    /// The microphone the voice listener was started with.
+    voice_running_device: String,
     pub last_saved: Option<PathBuf>,
     pub ffmpeg: Option<PathBuf>,
     /// ffmpeg.exe from the hover-preview add-on, checked at start and after installs.
@@ -319,7 +326,17 @@ impl RewindApp {
         let app_dir = std::env::current_exe()
             .ok()
             .and_then(|p| p.parent().map(|d| d.to_path_buf()));
-        let hotkeys = Hotkeys::new(cc.egui_ctx.clone()).ok();
+        // Saves start the moment they're asked for (hotkey, voice, tray); the result comes back
+        // here as a message.
+        let quick = {
+            let tx = tx.clone();
+            let ctx = cc.egui_ctx.clone();
+            QuickSave::new(Box::new(move |result| {
+                let _ = tx.send(Msg::Saved(result));
+                ctx.request_repaint();
+            }))
+        };
+        let hotkeys = Hotkeys::new(cc.egui_ctx.clone(), quick.clone()).ok();
         let tray = Tray::new(cc.egui_ctx.clone(), cfg.start_buffer_on_launch)
             .map_err(|e| log::warn!("{e}"))
             .ok();
@@ -370,7 +387,10 @@ impl RewindApp {
             scan_inflight: false,
             scan_again: false,
             monitors: engine::list_monitors(),
-            saving: false,
+            quick,
+            quick_armed: None,
+            engine_gen: 0,
+            voice_running_device: String::new(),
             last_saved: None,
             ffmpeg: trim::find_ffmpeg(app_dir.as_deref()).or_else(|| packs_ffmpeg.clone()),
             preview_exe: packs_ffmpeg,
@@ -808,22 +828,38 @@ impl RewindApp {
             self.voice_retry_at = None;
         }
         let whisper = self.cfg.voice.use_whisper && self.voice_files_cached().1;
+        // The voice microphone: its own choice, or the same one the recording uses. (Changing
+        // the recording mic used to leave the listener on the old one until a restart.)
+        let device = if self.cfg.voice.mic.is_empty() {
+            self.cfg.audio.mic_device.clone()
+        } else {
+            self.cfg.voice.mic.clone()
+        };
         if self.voice.is_some()
             && self.voice_running_cfg.as_ref() == Some(&self.cfg.voice)
             && self.voice_running_whisper == whisper
+            && self.voice_running_device == device
         {
             return;
         }
         self.voice = None;
         self.voice_error = None;
+        let quick = self.quick.clone();
+        let ctx = self.ctx.clone();
         let handle = voice::start(
             &self.cfg.voice,
             self.packs.voice_runtime_dir(),
             self.packs.voice_model_dir(&self.cfg.voice.language),
             whisper.then(|| self.packs.whisper_dir()),
-            self.cfg.audio.mic_device.clone(),
+            device.clone(),
+            std::sync::Arc::new(move || {
+                if quick.trigger() {
+                    ctx.request_repaint();
+                }
+            }),
             self.ctx.clone(),
         );
+        self.voice_running_device = device;
         self.voice_running_whisper = whisper;
         self.voice = Some(handle);
         self.voice_running_cfg = Some(self.cfg.voice.clone());
@@ -1036,6 +1072,7 @@ impl RewindApp {
                     log::warn!("{note}");
                 }
                 self.engine = Some(engine);
+                self.engine_gen += 1;
                 self.register_hotkeys();
                 self.sync_voice();
                 if self.cfg.start_buffer_on_launch {
@@ -1108,29 +1145,42 @@ impl RewindApp {
     }
 
     pub fn save_replay(&mut self, ctx: &egui::Context) {
-        if self.saving {
+        self.sync_quick();
+        if self.quick.trigger() {
+            ctx.request_repaint();
+        } else if !self.quick.is_saving() && self.engine.is_some() && !self.buffer_active() {
+            self.announce(
+                ToastKind::Error,
+                "Couldn't save replay",
+                "replay buffer is off — turn it on first",
+            );
+        }
+    }
+
+    pub fn is_saving(&self) -> bool {
+        self.quick.is_saving()
+    }
+
+    /// Keep the quick-save armed with the current engine and settings.
+    fn sync_quick(&mut self) {
+        let ready = matches!(self.phase, Phase::Ready) && self.buffer_active();
+        let settings = quick::Settings {
+            root: self.cfg.output_dir.clone(),
+            per_game: self.cfg.per_game_folders,
+            sound: self.cfg.sound_on_save.then(|| self.cfg.clip_sound.clone()),
+            sounds_dir: sounds_dir(),
+        };
+        let key = (ready, self.engine_gen, settings.clone());
+        if self.quick_armed.as_ref() == Some(&key) {
             return;
         }
-        let Some(saver) = self.engine.as_ref().and_then(|e| e.saver()) else {
-            return;
-        };
-        self.saving = true;
-        // Note what's in front now, while the game still is (the save takes a moment).
-        let game = if self.cfg.per_game_folders {
-            platform::foreground_app_name().and_then(|n| library::game_folder_name(&n))
+        let saver = if ready {
+            self.engine.as_ref().and_then(|e| e.saver())
         } else {
             None
         };
-        let root = self.cfg.output_dir.clone();
-        let tx = self.tx.clone();
-        let ctx = ctx.clone();
-        std::thread::spawn(move || {
-            let result = saver
-                .save()
-                .map(|path| move_to_game_folder(&root, path, game.as_deref()));
-            let _ = tx.send(Msg::Saved(result));
-            ctx.request_repaint();
-        });
+        self.quick.arm(saver, settings);
+        self.quick_armed = Some(key);
     }
 
     /// Put the clip file on the clipboard.
@@ -1247,6 +1297,7 @@ impl RewindApp {
         let mut note = None;
         if let Some(engine) = &mut self.engine {
             if rebuild {
+                self.engine_gen += 1;
                 if let Err(e) = engine.apply(&next, was_running) {
                     // Roll back to the last known-good settings so the buffer keeps working.
                     let _ = engine.apply(&self.cfg, was_running);
@@ -1403,20 +1454,16 @@ impl RewindApp {
                 Msg::Installed(Ok(())) => self.phase = Phase::Starting { frames: 0 },
                 Msg::Installed(Err(e)) => self.phase = Phase::Failed(e),
                 Msg::Saved(Ok(path)) => {
-                    self.saving = false;
+                    // The sound already played when the save was asked for.
                     let name = path
                         .file_name()
                         .map(|n| n.to_string_lossy().into_owned())
                         .unwrap_or_default();
                     self.last_saved = Some(path);
-                    if self.cfg.sound_on_save {
-                        crate::sounds::play_clip_saved(&sounds_dir(), &self.cfg.clip_sound);
-                    }
                     self.announce(ToastKind::Success, "Replay saved", &name);
                     self.refresh_clips(true);
                 }
                 Msg::Saved(Err(e)) => {
-                    self.saving = false;
                     self.announce(ToastKind::Error, "Couldn't save replay", &e);
                 }
                 Msg::Trimmed(Ok(path)) => {
@@ -1559,37 +1606,6 @@ impl RewindApp {
 }
 
 /// Move a just-saved clip into `root/<game>/`. Any problem leaves it where it is.
-fn move_to_game_folder(root: &std::path::Path, path: PathBuf, game: Option<&str>) -> PathBuf {
-    let Some(game) = game else { return path };
-    let dir = root.join(game);
-    if std::fs::create_dir_all(&dir).is_err() {
-        return path;
-    }
-    let Some(name) = path.file_name() else {
-        return path;
-    };
-    let mut target = dir.join(name);
-    if target.exists() {
-        let stem = path
-            .file_stem()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "clip".into());
-        let ext = path
-            .extension()
-            .map(|e| e.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "mp4".into());
-        target = library::unique_path(&dir, &stem, &ext);
-    }
-    // OBS may still hold the file for a moment after reporting it saved.
-    for _ in 0..10 {
-        if std::fs::rename(&path, &target).is_ok() {
-            return target;
-        }
-        std::thread::sleep(Duration::from_millis(200));
-    }
-    path
-}
-
 /// Custom clip-saved sounds (.mp3 / .wav).
 pub fn sounds_dir() -> PathBuf {
     directories_dir().join("sounds")
@@ -1660,11 +1676,8 @@ impl eframe::App for RewindApp {
         if theme::tick_tween() {
             theme::apply_visuals(ctx);
         }
-        if self.voice.as_ref().map(|v| v.poll()).unwrap_or(false)
-            && matches!(self.phase, Phase::Ready)
-        {
-            self.save_replay(ctx);
-        }
+        // Voice triggers save straight from the voice thread (see `sync_voice`).
+        self.sync_quick();
 
         if let Phase::Starting { frames } = &mut self.phase {
             // Draw a couple of "Starting…" frames before the blocking engine start.
@@ -1689,8 +1702,8 @@ impl eframe::App for RewindApp {
             self.perf.sample_if_due();
             let live = self.buffer_active() && self.focused;
             // A full 60 fps burst only while something is actually moving (page slide, toast
-            // fade, theme cross-fade). The recording pulse gets 10 fps, which is plenty for a
-            // ~1.4 s breathing dot. Idle stays on the slow CPU/RAM sample cadence.
+            // fade, theme cross-fade). The recording pulse gets 20 fps, plenty for a ~1.4 s
+            // breathing dot. Idle stays on the slow CPU/RAM sample cadence.
             let animating = matches!(self.update_state, UpdateState::Installing(..))
                 || self.page_anim() < 1.0
                 || theme::tweening()
@@ -1702,7 +1715,7 @@ impl eframe::App for RewindApp {
             let mut ms: u64 = if animating {
                 16
             } else if pulsing {
-                33
+                50
             } else if live {
                 1000
             } else {
